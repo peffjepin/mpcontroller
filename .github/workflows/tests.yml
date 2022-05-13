@@ -1,0 +1,33 @@
+name: Tests
+
+on:
+  - push
+  - pull_request
+
+jobs:
+
+  test_in_place:
+
+    strategy:
+      matrix:
+        python-version: ['3.6', '3.7', '3.8', '3.9', '3.10']
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Update pip
+      run: python -m pip install --upgrade pip
+
+    - name: Install package with testing extras
+      run: python -m pip install ".[testing]"
+
+    - name: Execute tests
+      run: FAST_TIMEOUT=10 pytest
