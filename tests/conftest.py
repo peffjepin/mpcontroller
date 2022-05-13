@@ -54,8 +54,12 @@ def _patch_test_environment():
 
 
 @pytest.fixture(autouse=True, scope="function")
-def _kill_remaining_resources():
+def _auto_cleanup_long_running_resources():
     yield
+    _kill_processes_and_threads()
+
+
+def _kill_processes_and_threads():
     while _processes:
         try:
             _processes.pop().kill()
@@ -63,7 +67,7 @@ def _kill_remaining_resources():
             pass
     while _pipe_readers:
         try:
-            _pipe_readers.pop().join(1)
+            _pipe_readers.pop().kill()
         except Exception:
             pass
 

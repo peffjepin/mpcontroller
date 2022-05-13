@@ -70,7 +70,7 @@ class Controller:
     def kill(self):
         if self._worker:
             self.send_message(ipc.Signal.SHUTDOWN)
-            self._reader.join()
+            self._reader.kill()
             self._reader = None
             self._worker.kill()
             self._worker = None
@@ -79,7 +79,7 @@ class Controller:
     def join(self, timeout=5):
         if self._worker:
             self.send_message(ipc.Signal.SHUTDOWN)
-            self._reader.join(timeout)
+            self._reader.kill()
             self._reader = None
             self._worker.join(timeout)
             self._worker = None

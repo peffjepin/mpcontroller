@@ -41,6 +41,11 @@ class PipeReader:
             self._thread.join(timeout)
             self._thread = None
 
+    def kill(self):
+        # let the thread die on it's own time
+        self._running = False
+        self._thread = False
+
     def _mainloop(self):
         while self._running:
             while self._conn.poll(0):
