@@ -22,8 +22,8 @@ def message_handler(msg_type):
 def _create_callback_registry(obj):
     callbacks = collections.defaultdict(list)
 
-    for k in dir(obj):
-        method = getattr(obj, k, None)
+    for key in dir(obj):
+        method = getattr(obj, key, None)
         fn = getattr(method, "__func__", None)
 
         if not fn:
@@ -94,7 +94,10 @@ class Controller:
 
     @property
     def status(self):
-        if self._status in Worker.EXIT_STATES and self._worker.exitcode is not None:
+        if (
+            self._status in Worker.EXIT_STATES
+            and self._worker.exitcode is not None
+        ):
             self.join()
         return self._status
 
