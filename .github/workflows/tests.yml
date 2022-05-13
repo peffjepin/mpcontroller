@@ -30,4 +30,4 @@ jobs:
       run: python -m pip install ".[testing]"
 
     - name: Execute tests
-      run: FAST_TIMEOUT=10 pytest
+      run: FAST_TIMEOUT=30 pytest
