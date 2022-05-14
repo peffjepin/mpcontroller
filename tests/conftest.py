@@ -10,10 +10,9 @@ from mpcontroller import worker
 from mpcontroller import ipc
 
 
-try:
-    FAST_TIMEOUT = float(os.environ["MPC_FAST_TIMEOUT"])
-except Exception:
-    FAST_TIMEOUT = 0.5
+FAST_TIMEOUT = 0.5
+if os.environ.get("CI", None):
+    FAST_TIMEOUT = 30
 
 VERY_FAST_TIMEOUT = FAST_TIMEOUT / 10
 FAST_POLL = FAST_TIMEOUT / 10_000

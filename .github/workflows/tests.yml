@@ -31,5 +31,3 @@ jobs:
 
     - name: Execute tests
       run: pytest
-      env: 
-        FAST_TIMEOUT: 30
