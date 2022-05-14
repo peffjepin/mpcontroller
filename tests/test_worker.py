@@ -46,8 +46,6 @@ def test_controller_on_init(controller):
 def test_spawning_a_worker(controller):
     controller.spawn()
 
-    assert controller.status == Worker.INITIALIZING
-
     @happens_soon
     def worker_initializes():
         assert not controller.exceptions
@@ -85,8 +83,6 @@ def test_recieving_a_response_from_a_valid_message(message):
 
 def test_joining_a_worker(controller):
     controller.spawn()
-
-    assert controller.status == Worker.INITIALIZING
     controller.join(timeout=FAST_TIMEOUT)
 
     assert not controller.exceptions
@@ -207,7 +203,6 @@ class ExceptionInMain(Worker):
 
 def test_worker_error_in_main():
     controller = ExceptionInMain.spawn()
-    assert controller.status == Worker.INITIALIZING
 
     @happens_soon
     def worker_dies():
@@ -224,7 +219,6 @@ class ExceptionInSetup(Worker):
 
 def test_worker_error_in_setup(exception):
     controller = ExceptionInSetup.spawn()
-    assert controller.status == Worker.INITIALIZING
 
     @happens_soon
     def worker_dies():
@@ -242,7 +236,6 @@ class ExceptionInHandler(Worker):
 
 def test_worker_error_in_message_handler(message, exception):
     controller = ExceptionInHandler.spawn()
-    assert controller.status == Worker.INITIALIZING
     controller.send_message(message)
 
     @happens_soon
@@ -293,16 +286,12 @@ def test_spawn_errors_if_worker_already_exists(controller):
 def test_can_spawn_new_worker_with_controller(controller):
     controller.spawn()
 
-    assert controller.status == Worker.INITIALIZING
-
     @happens_soon
     def worker_goes_idle():
         assert controller.status == Worker.IDLE
 
     controller.kill()
     controller.spawn()
-
-    assert controller.status == Worker.INITIALIZING
 
     @happens_soon
     def worker_goes_idle_again():
