@@ -20,6 +20,14 @@ class WorkerStatus(enum.Enum):
     TERM = 4
 
 
+def message_all(msg, type=None):
+    for controller_type, controller_list in _registry.items():
+        if type and type != controller_type:
+            continue
+        for controller in controller_list.copy():
+            controller.send_message(msg)
+
+
 def kill_all(type=None):
     for controller_type, controller_list in _registry.items():
         if type and type != controller_type:
@@ -46,10 +54,13 @@ class Controller:
         self._worker = None
         self._reader = None
         self._id = next(self._ID_COUNTER)
+        self.message_callbacks = ipc.IpcHandler.get_message_callback_table(
+            self
+        )
 
-        self.last_health_check = -1
-        self.messages = collections.deque()
-        self.exceptions = collections.deque()
+    def __repr__(self):
+        worker = f"Worker={self._worker_type.__name__}"
+        return f"<{self.__class__.__name__}: {worker}, id={self.id}>"
 
     def spawn(self):
         if self._worker:
@@ -82,7 +93,18 @@ class Controller:
             _registry[self._worker_type].remove(self)
 
     def send_message(self, message):
-        self._worker.conn.send(message)
+        if not isinstance(message, type):
+            if type(message) not in self._worker.message_callbacks:
+                raise exceptions.UnknownMessageError(message, self.worker)
+            self._worker.conn.send(message)
+        else:
+            self._send_signal(message)
+
+    def _send_signal(self, signal_type):
+        if signal_type not in self._worker.signal_callbacks:
+            raise exceptions.UnknownMessageError(signal_type, self.worker)
+        else:
+            self._worker.signals[signal_type].set()
 
     @property
     def id(self):
@@ -108,11 +130,13 @@ class Controller:
         self.exceptions.append(exc)
 
     def _recv_message(self, msg):
-        if isinstance(msg, ipc.StatusUpdate):
-            self._status = msg.status
-            self.last_health_check = time.time()
-        else:
-            self.messages.append(msg)
+        key = type(msg)
+
+        if key not in self.message_callbacks:
+            raise exceptions.UnknownMessageError(msg, repr(self))
+
+        for cb in self.message_callbacks[key]:
+            cb(msg)
 
 
 class Worker(mp.Process):
@@ -135,9 +159,15 @@ class Worker(mp.Process):
         self._workthread = None
         self._workthread_error = None
         self._jobqueue = None
-        self._message_callbacks = ipc.MessageHandler.get_callback_table(self)
-        self.__status = mp.Value("i")
-        self.__status.value = WorkerStatus.DEAD.value
+        self.message_callbacks = ipc.IpcHandler.get_message_callback_table(
+            self
+        )
+        self.signal_callbacks = ipc.IpcHandler.get_signal_callback_table(self)
+        self.signals = {
+            sig_type: sig_type(mp.Value("i"))
+            for sig_type in self.signal_callbacks
+        }
+        self.__status = mp.Value("i", WorkerStatus.DEAD.value)
         super().__init__(target=self._mainloop)
 
     def __repr__(self):
@@ -163,7 +193,8 @@ class Worker(mp.Process):
 
     @property
     def status(self):
-        return WorkerStatus(self.__status.value)
+        with self.__status.get_lock():
+            return WorkerStatus(self.__status.value)
 
     @status.setter
     def status(self, new_status: WorkerStatus):
@@ -172,7 +203,8 @@ class Worker(mp.Process):
             # don't change status once terminating has been signaled
             return
         if new_status != status:
-            self.__status.value = new_status.value
+            with self.__status.get_lock():
+                self.__status.value = new_status.value
 
     def send_message(self, message):
         self._conn.send(message)
@@ -187,6 +219,7 @@ class Worker(mp.Process):
 
             while self.status != WorkerStatus.TERM:
                 self._process_messages()
+                self._clear_signals()
                 time.sleep(self.POLL_INTERVAL)
 
             self._workthread.join(timeout=1)
@@ -198,18 +231,16 @@ class Worker(mp.Process):
         except Exception as exc:
             self.send_message(exc)
             exitcode = 1
-        finally:
-            try:
-                self.teardown()
-            except Exception as exc:
-                if exitcode == 1:
-                    pass
-                else:
-                    exitcode = 1
-                    self.send_message(exc)
 
-            self.status = WorkerStatus.DEAD
-            return exitcode
+        try:
+            self.teardown()
+        except Exception as exc:
+            if exitcode == 0:
+                self.send_message(exc)
+                exitcode = 1
+
+        self.status = WorkerStatus.DEAD
+        return exitcode
 
     def _process_messages(self):
         while self._conn.poll(0):
@@ -221,13 +252,23 @@ class Worker(mp.Process):
 
             self._jobqueue.append(job)
 
+    def _clear_signals(self):
+        for type, sig in self.signals.items():
+            if not sig.is_set:
+                continue
+
+            for cb in self.signal_callbacks[type]:
+                cb()
+
+            sig.clear()
+
     def _message_to_job(self, msg):
         if isinstance(msg, ipc.Signal):
             key = msg
         else:
             key = type(msg)
 
-        callbacks = self._message_callbacks[key]
+        callbacks = self.message_callbacks[key]
         if not callbacks:
             raise exceptions.UnknownMessageError(msg, repr(self))
 

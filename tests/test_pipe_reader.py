@@ -30,7 +30,7 @@ class TestPipeReader:
 
         @happens_soon
         def message_callback_invoked():
-            assert self.msg_cb.called_with(example_message)
+            self.msg_cb.assert_called_with(example_message)
 
     def test_join(self):
         msg = "..."

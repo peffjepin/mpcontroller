@@ -8,7 +8,7 @@ from .conftest import BlankWorker
 from .conftest import RecordedController
 from .conftest import ExampleMessage
 from .conftest import example_message
-from .conftest import example_signal
+from .conftest import ExampleSignal
 
 import mpcontroller as mpc
 
@@ -20,7 +20,7 @@ def test_sending_a_worker_an_unknown_message():
         controller.send_message(example_message)
 
     assert excinfo.value == mpc.UnknownMessageError(
-        controller.worker, example_message
+        example_message, controller.worker
     )
 
 
@@ -28,10 +28,10 @@ def test_sending_a_worker_an_unknown_signal():
     controller = BlankWorker.spawn()
 
     with pytest.raises(mpc.UnknownMessageError) as excinfo:
-        controller.send_message(example_signal)
+        controller.send_message(ExampleSignal)
 
     assert excinfo.value == mpc.UnknownMessageError(
-        controller.worker, example_signal
+        ExampleSignal, controller.worker
     )
 
 
@@ -39,8 +39,7 @@ def test_sending_a_controller_an_unknown_message():
     controller = Controller(Echo)
     controller.spawn()
 
-    exception = mpc.UnknownMessageError(repr(controller), example_message)
-    assert controller.id in str(exception)
+    exception = mpc.UnknownMessageError(example_message, repr(controller))
 
     @exception_soon(exception)
     def cause():
@@ -53,16 +52,16 @@ def test_worker_handles_message_with_registered_callback():
 
     @happens_soon
     def message_is_sent_back():
-        assert controller.example_message_cb.called_with(example_message)
+        controller.msg_cb.assert_called_with(example_message)
 
 
 def test_worker_handles_signal_with_registered_callback():
     controller = Echo.spawn()
-    controller.send_message(example_signal)
+    controller.send_message(ExampleSignal)
 
     @happens_soon
     def message_is_sent_back():
-        assert controller.example_message_cb.called_with()
+        controller.msg_cb.assert_called_with(example_message)
 
 
 def test_worker_can_register_multiple_callbacks_for_a_single_message():
@@ -71,12 +70,8 @@ def test_worker_can_register_multiple_callbacks_for_a_single_message():
 
     @happens_soon
     def message_is_sent_back_twice():
-        assert controller.example_message_cb.nth(0).called_with(
-            example_message
-        )
-        assert controller.example_message_cb.nth(1).called_with(
-            example_message
-        )
+        controller.msg_cb.nth(0).assert_called_with(example_message)
+        controller.msg_cb.nth(1).assert_called_with(example_message)
 
 
 def test_worker_handles_messages_in_the_order_sent():
@@ -89,9 +84,7 @@ def test_worker_handles_messages_in_the_order_sent():
     @happens_soon
     def responses_arive_in_order():
         for i in range(3):
-            assert controller.example_message_cb.nth(i).called_with(
-                example_messages[i]
-            )
+            controller.msg_cb.nth(i).assert_called_with(example_messages[i])
 
 
 def test_messaging_all_workers():
@@ -100,10 +93,8 @@ def test_messaging_all_workers():
 
     @happens_soon
     def all_controllers_recieve_resposne():
-        assert all(
-            c.example_message_cb.called_with(example_message)
-            for c in controllers
-        )
+        for c in controllers:
+            c.msg_cb.assert_called_with(example_message)
 
 
 def test_messaging_all_workers_of_a_given_type():
@@ -113,23 +104,22 @@ def test_messaging_all_workers_of_a_given_type():
 
     @happens_soon
     def only_echo_once_controllers_are_called():
-        assert all(
-            c.example_message_cb.called_with(example_message)
-            for c in echo_once
-        )
-        assert all(not c.example_message_cb.called for c in echo_twice)
+        for c in echo_once:
+            c.msg_cb.assert_called_with(example_message)
+        for c in echo_twice:
+            assert not c.msg_cb.called
 
 
 class Echo(Worker):
     CONTROLLER = RecordedController
 
-    @mpc.message_handler(type(example_message))
+    @mpc.message_handler(ExampleMessage)
     def echomsg(self, msg):
-        self.send_message(example_message)
+        self.send_message(msg)
 
-    @mpc.message_handler(example_signal)
+    @mpc.signal_handler(ExampleSignal)
     def echosig(self):
-        self.send_message(example_signal)
+        self.send_message(example_message)
 
 
 class EchoTwice(Worker):

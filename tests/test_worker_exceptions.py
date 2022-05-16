@@ -1,7 +1,7 @@
 from .conftest import Worker
 from .conftest import EqualityException
+from .conftest import ExampleSignal
 from .conftest import example_message
-from .conftest import example_signal
 from .conftest import exception_soon
 
 import mpcontroller as mpc
@@ -30,7 +30,7 @@ def test_error_in_signal_handler():
     @exception_soon(ErrorInSignalHandler.EXC)
     def cause():
         controller = ErrorInSignalHandler.spawn()
-        controller.send_message(example_signal)
+        controller.send_message(ExampleSignal)
 
 
 def test_error_in_normal_teardown_sequence():
@@ -71,7 +71,7 @@ class ErrorInMessageHandler(Worker):
 class ErrorInSignalHandler(Worker):
     EXC = EqualityException("signal")
 
-    @mpc.message_handler(example_signal)
+    @mpc.signal_handler(ExampleSignal)
     def handler(self):
         raise self.EXC
 

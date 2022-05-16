@@ -2,8 +2,6 @@ import _thread
 import time
 import signal
 import threading
-import traceback
-import sys
 
 from collections import defaultdict
 
@@ -16,7 +14,7 @@ def _handle_interrupt(*args):
     if PipeReader.exception is not None:
         _mainthread_exception_handler(PipeReader.exception)
     else:
-        print(traceback.format_exc(), file=sys.stderr)
+        raise KeyboardInterrupt()
 
 
 def set_exception_handler(fn):
@@ -27,34 +25,28 @@ def set_exception_handler(fn):
 signal.signal(signal.SIGINT, _handle_interrupt)
 
 
-def _id_generator():
-    id = 0
-    while True:
-        yield id
-
-
 class Signal:
-    _idgen = _id_generator()
+    SET = 1
+    CLEAR = 0
 
-    def __init__(self, *, _id=None):
-        self._id = _id or next(self._idgen)
+    def __init__(self, shared_int):
+        assert type(self) != Signal, "Signal should be subclassed"
+        self._shared = shared_int
+        self._shared.value = Signal.CLEAR
 
-    def __eq__(self, other):
-        return isinstance(other, Signal) and other.id == self._id
+    def set(self, value=None):
+        self._shared.value = value or Signal.SET
 
-    def __hash__(self):
-        return hash(self._id)
-
-    def __reduce__(self):
-        return (Signal, (), {"_id": self._id})
+    def clear(self):
+        self._shared.value = Signal.CLEAR
 
     @property
-    def id(self):
-        return self._id
+    def is_set(self):
+        return self._shared.value != Signal.CLEAR
 
 
 class PipeReader:
-    POLL_RATE = 0.05
+    POLL_INTERVAL = 0.05
 
     exception = None
 
@@ -90,21 +82,26 @@ class PipeReader:
         pass
 
     def _mainloop(self):
-        while self._running:
-            while self._conn.poll(0):
-                msg = self._conn.recv()
-                if isinstance(msg, Exception):
-                    self._exc_cb(msg)
-                else:
-                    self._msg_cb(msg)
-            time.sleep(self.POLL_RATE)
+        try:
+            while self._running:
+                while self._conn.poll(0):
+                    msg = self._conn.recv()
+                    if isinstance(msg, Exception):
+                        self._exc_cb(msg)
+                    else:
+                        self._msg_cb(msg)
+                time.sleep(self.POLL_INTERVAL)
+        except Exception as exc:
+            self._exc_cb(exc)
 
 
-class MessageHandler:
-    _registry = defaultdict(lambda: defaultdict(list))
+class IpcHandler:
+    _message_registry = defaultdict(lambda: defaultdict(list))
+    _signal_registry = defaultdict(lambda: defaultdict(list))
 
-    def __init__(self, msg_type):
-        self._msg_type = msg_type
+    def __init__(self, key, *, _issignal=False):
+        self._issignal = _issignal
+        self._key = key
 
     def __call__(self, fn):
         self._fn = fn
@@ -112,20 +109,36 @@ class MessageHandler:
 
     def __set_name__(self, cls, name):
         setattr(cls, name, self._fn)
-        self._mark_class(name, cls)
+        self._register(name, cls)
 
-    def _mark_class(self, name, cls):
-        self._registry[cls][self._msg_type].append(name)
+    def _register(self, name, cls):
+        if self._issignal:
+            registry = self._signal_registry
+        else:
+            registry = self._message_registry
+        registry[cls][self._key].append(name)
 
     @classmethod
-    def get_callback_table(cls, object):
+    def get_message_callback_table(cls, object):
+        return cls._make_callback_table(object, cls._message_registry)
+
+    @classmethod
+    def get_signal_callback_table(cls, object):
+        return cls._make_callback_table(object, cls._signal_registry)
+
+    @classmethod
+    def _make_callback_table(cls, object, registry):
         table = defaultdict(list)
-        for msg_type, names in cls._registry[type(object)].items():
+        for key, names in registry[type(object)].items():
             for name in names:
                 bound_method = getattr(object, name)
-                table[msg_type].append(bound_method)
+                table[key].append(bound_method)
         return table
 
 
 def message_handler(msg_type):
-    return MessageHandler(msg_type)
+    return IpcHandler(msg_type)
+
+
+def signal_handler(sig_type):
+    return IpcHandler(sig_type, _issignal=True)

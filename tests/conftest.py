@@ -21,10 +21,21 @@ FAST_POLL = FAST_TIMEOUT / 10_000
 _processes = list()
 _pipe_readers = list()
 _mainthread_exception = None
+_expected_exception = None
+
+
+class _DontIgnoreException(Exception):
+    pass
 
 
 def _mainthread_exception_hook(exc):
     global _mainthread_exception
+
+    if _expected_exception is None:
+        raise _DontIgnoreException(
+            f"a thread or process died unexpectedly\n: {exc!r}"
+        )
+
     _mainthread_exception = exc
 
 
@@ -32,12 +43,15 @@ class ExampleMessage(typing.NamedTuple):
     content: str
 
 
+class ExampleSignal(mpc.Signal):
+    pass
+
+
 example_message = ExampleMessage("testing")
-example_signal = mpc.Signal()
 
 
 class PipeReader(ipc.PipeReader):
-    POLL_RATE = FAST_POLL
+    POLL_INTERVAL = FAST_POLL
 
     def __init__(self, *args, **kwds):
         _pipe_readers.append(self)
@@ -45,7 +59,7 @@ class PipeReader(ipc.PipeReader):
 
 
 class Worker(mpc.Worker):
-    POLL_RATE = FAST_POLL
+    POLL_INTERVAL = FAST_POLL
 
     def __init__(self, *args, **kwds):
         _processes.append(self)
@@ -57,7 +71,7 @@ class BlankWorker(Worker):
 
 
 class Controller(mpc.Controller):
-    POLL_RATE = FAST_POLL
+    POLL_INTERVAL = FAST_POLL
 
 
 class RecordedController(Controller):
@@ -83,12 +97,14 @@ def _patch_test_environment():
 
 
 @pytest.fixture(autouse=True, scope="function")
-def _auto_cleanup_long_running_resources():
+def _per_test_cleanup():
     yield
     _kill_processes_and_threads()
 
     global _mainthread_exception
     _mainthread_exception = None
+
+    worker._registry.clear()
 
 
 def _kill_processes_and_threads():
@@ -111,6 +127,8 @@ def _succeeds_before_timeout(fn, timeout):
         try:
             fn()
         except Exception as exc:
+            if isinstance(exc, _DontIgnoreException):
+                raise exc
             if time.time() < deadline:
                 continue
             else:
@@ -125,7 +143,9 @@ def _doesnt_succeed_before_timeout(fn, timeout):
     while True:
         try:
             fn()
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, _DontIgnoreException):
+                raise exc
             if time.time() < deadline:
                 continue
             else:
@@ -152,16 +172,22 @@ def doesnt_happen(fn):
 def exception_soon(expected_exception):
     # expected_exception will be compared with __eq__
     def inner(fn):
-        fn()
-        deadline = time.time() + FAST_TIMEOUT
-        while time.time() < deadline:
-            exc = _mainthread_exception
-            if exc == expected_exception:
-                return
-            elif exc is not None:
-                print(f"expected: {expected_exception!r}")
-                raise _mainthread_exception
-        raise AssertionError(f"never caught {expected_exception!r}")
+        global _expected_exception
+        _expected_exception = expected_exception
+
+        try:
+            fn()
+            deadline = time.time() + FAST_TIMEOUT
+            while time.time() < deadline:
+                exc = _mainthread_exception
+                if exc == expected_exception:
+                    return
+                elif exc is not None:
+                    print(f"expected: {expected_exception!r}")
+                    raise _mainthread_exception
+            raise AssertionError(f"never caught {expected_exception!r}")
+        finally:
+            _expected_exception = None
 
     return inner
 
@@ -182,7 +208,7 @@ class RecordedCallback:
 
     @property
     def called(self):
-        return len(self.args)
+        return len(self._args)
 
     @property
     def args(self):
@@ -192,8 +218,8 @@ class RecordedCallback:
     def kwargs(self):
         return self._kwargs[self._n]
 
-    def called_with(self, *args, **kwargs):
-        return self.args == args and self.kwargs == kwargs
+    def assert_called_with(self, *args, **kwargs):
+        assert self.args == args and self.kwargs == kwargs
 
 
 @pytest.fixture

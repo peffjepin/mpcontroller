@@ -14,7 +14,7 @@ def test_setup_is_called_first():
 
     @happens_soon
     def setup_message_shows_up():
-        assert controller.msg_cb.nth(0).called_with(
+        controller.msg_cb.nth(0).assert_called_with(
             VerboseWorker.SETUP_MESSAGE
         )
 
@@ -24,11 +24,11 @@ def test_main_executes_in_a_loop():
 
     @happens_soon
     def multiple_main_messages_appear():
-        assert controller.msg_cb.nth(0).called_with(
+        controller.msg_cb.nth(0).assert_called_with(
             VerboseWorker.SETUP_MESSAGE
         )
-        assert controller.msg_cb.nth(1).called_with(VerboseWorker.MAIN_MESSAGE)
-        assert controller.msg_cb.nth(2).called_with(VerboseWorker.MAIN_MESSAGE)
+        controller.msg_cb.nth(1).assert_called_with(VerboseWorker.MAIN_MESSAGE)
+        controller.msg_cb.nth(2).assert_called_with(VerboseWorker.MAIN_MESSAGE)
 
 
 def test_teardown_executes_before_exit():
@@ -36,13 +36,13 @@ def test_teardown_executes_before_exit():
 
     @happens_soon
     def process_begins_execution():
-        assert controller.msg_cb.nth(0).called_with(
+        controller.msg_cb.nth(0).assert_called_with(
             VerboseWorker.SETUP_MESSAGE
         )
-        assert controller.msg_cb.nth(1).called_with(VerboseWorker.MAIN_MESSAGE)
+        controller.msg_cb.nth(1).assert_called_with(VerboseWorker.MAIN_MESSAGE)
 
     controller.join(FAST_TIMEOUT)
-    assert controller.msg_cb.nth(-1).called_with(
+    controller.msg_cb.nth(-1).assert_called_with(
         VerboseWorker.TEARDOWN_MESSAGE
     )
 
@@ -54,7 +54,7 @@ def test_teardown_still_executes_after_an_error_occurs():
     def cause():
         controller.spawn()
 
-    assert controller.msg_cb.nth(-1).called_with(
+    controller.msg_cb.nth(-1).assert_called_with(
         VerboseWorker.TEARDOWN_MESSAGE
     )
 
