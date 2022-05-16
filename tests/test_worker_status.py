@@ -20,19 +20,20 @@ def test_idle_when_not_handling_messages():
 
     @happens_soon
     def worker_goes_idle():
-        controller.status == mpc.IDLE
+        assert controller.status == mpc.IDLE
 
     @doesnt_happen
     def worker_goes_busy():
-        controller.status == mpc.BUSY
+        assert controller.status == mpc.BUSY
 
 
 def test_busy_when_handling_messages():
     controller = BusyMessageWorker.spawn()
+    controller.send_message(example_message)
 
     @happens_soon
     def worker_goes_busy():
-        controller.status == mpc.BUSY
+        assert controller.status == mpc.BUSY
 
 
 def test_dead_after_join():

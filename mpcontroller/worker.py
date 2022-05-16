@@ -112,7 +112,7 @@ class Controller:
 
     @property
     def status(self):
-        return self._worker.status
+        return self._worker.status if self._worker else WorkerStatus.DEAD
 
     @property
     def worker(self):

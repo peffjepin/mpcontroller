@@ -54,6 +54,8 @@ def test_teardown_still_executes_after_an_error_occurs():
     def cause():
         controller.spawn()
 
+    controller.join(FAST_TIMEOUT)
+
     controller.msg_cb.nth(-1).assert_called_with(
         VerboseWorker.TEARDOWN_MESSAGE
     )
