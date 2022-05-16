@@ -9,6 +9,23 @@ from . import exceptions
 
 
 _MESSAGE_HANDLER_INJECTION = "_pyscrape_handlers_"
+_registry = collections.defaultdict(list)
+
+
+def kill_all(type=None):
+    for controller_type, controller_list in _registry.items():
+        if type and type != controller_type:
+            continue
+        for controller in controller_list.copy():
+            controller.kill()
+
+
+def join_all(type=None):
+    for controller_type, controller_list in _registry.items():
+        if type and type != controller_type:
+            continue
+        for controller in controller_list.copy():
+            controller.join()
 
 
 def message_handler(msg_type):
@@ -61,29 +78,30 @@ class Controller:
 
         self._status = Worker.INITIALIZING
         self._worker = self._worker_type(self.id)
-        self._reader = ipc.PipeReader(
-            self._worker.conn, self._recv_exception_message, self._recv_message
-        )
+        self._reader = ipc.PipeReader(self._worker.conn, self._recv_message)
         self._worker.start()
         self._reader.start()
+        _registry[self._worker_type].append(self)
 
     def kill(self):
         if self._worker:
-            self.send_message(ipc.Signal.SHUTDOWN)
+            self.send_message(ipc.SHUTDOWN)
             self._reader.kill()
             self._reader = None
             self._worker.kill()
             self._worker = None
             self._status = Worker.DEAD
+            _registry[self._worker_type].remove(self)
 
     def join(self, timeout=5):
         if self._worker:
-            self.send_message(ipc.Signal.SHUTDOWN)
+            self.send_message(ipc.SHUTDOWN)
             self._reader.kill()
             self._reader = None
             self._worker.join(timeout)
             self._worker = None
             self._status = Worker.DEAD
+            _registry[self._worker_type].remove(self)
 
     def send_message(self, message):
         self._worker.conn.send(message)
@@ -125,6 +143,7 @@ class Controller:
 
 
 class Worker(mp.Process):
+    CONTROLLER = Controller
 
     DEAD = "dead"
     IDLE = "idle"
@@ -140,11 +159,11 @@ class Worker(mp.Process):
 
     @classmethod
     def controller(cls):
-        return Controller(cls)
+        return cls.CONTROLLER(cls)
 
     @classmethod
     def spawn(cls):
-        controller = Controller(cls)
+        controller = cls.CONTROLLER(cls)
         controller.spawn()
         return controller
 
@@ -244,7 +263,7 @@ class Worker(mp.Process):
         if not callbacks:
             return self._handle_unknown_message(msg)
 
-        return Job(callbacks, msg, self)
+        return _Job(callbacks, msg, self)
 
     def _workthread_target(self):
         while self.status not in self.EXIT_STATES:
@@ -258,17 +277,13 @@ class Worker(mp.Process):
         exc = exceptions.UnknownMessageError(msg, repr(self))
         self.send_message(exc)
 
-    @message_handler(ipc.Signal.SHUTDOWN)
+    @message_handler(ipc.SHUTDOWN)
     def _internal_shutdown_handler(self):
         self.status = Worker.TERMINATING
 
-    @message_handler(ipc.Signal.HEALTH_CHECK)
-    def _internal_health_check_handler(self):
-        self.send_message(self.status)
 
-
-class Job:
-    _URGENT_TYPES = {ipc.Signal.SHUTDOWN, ipc.Signal.HEALTH_CHECK}
+class _Job:
+    _URGENT_TYPES = {ipc.SHUTDOWN}
 
     def __init__(self, callbacks, msg, worker):
         self._callbacks = callbacks

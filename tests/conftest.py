@@ -20,6 +20,12 @@ FAST_POLL = FAST_TIMEOUT / 10_000
 
 _processes = list()
 _pipe_readers = list()
+_mainthread_exception = None
+
+
+def _mainthread_exception_hook(exc):
+    global _mainthread_exception
+    _mainthread_exception = exc
 
 
 class ExampleMessage(typing.NamedTuple):
@@ -30,7 +36,7 @@ example_message = ExampleMessage("testing")
 example_signal = mpc.Signal()
 
 
-class PipeReader(mpc.PipeReader):
+class PipeReader(ipc.PipeReader):
     POLL_RATE = FAST_POLL
 
     def __init__(self, *args, **kwds):
@@ -73,6 +79,7 @@ def _patch_test_environment():
     worker.Controller = Controller
     worker.Worker = Worker
     ipc.PipeReader = PipeReader
+    ipc.set_exception_handler(_mainthread_exception_hook)
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -142,16 +149,15 @@ def doesnt_happen(fn):
 def exception_soon(expected_exception):
     # expected_exception will be compared with __eq__
     def inner(fn):
-        try:
-            fn()
-            time.sleep(FAST_TIMEOUT)
-        except Exception as exc:
+        fn()
+        deadline = time.time() + FAST_TIMEOUT
+        while time.time() < deadline:
+            exc = _mainthread_exception
             if exc == expected_exception:
                 return
-            else:
-                raise 
-        else:
-            raise AssertionError(f"didn't catch {expected_exception!r}")
+            elif exc is not None:
+                raise _mainthread_exception
+        raise AssertionError(f"never caught {expected_exception!r}")
 
     return inner
 

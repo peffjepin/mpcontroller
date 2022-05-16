@@ -1,30 +1,66 @@
-import typing
+import _thread
 import time
+import signal
 import threading
-import enum
+import traceback
+import sys
 
 
-class Signal(enum.Enum):
-    HEALTH_CHECK = enum.auto()
-    REQUEST_WEB_JOB = enum.auto()
-    SHUTDOWN = enum.auto()
+def _mainthread_exception_handler(exc):
+    raise exc
 
 
-class WebJob(typing.NamedTuple):
-    url: str
-    endpoint: str
+def _handle_interrupt(*args):
+    if PipeReader.exception is not None:
+        _mainthread_exception_handler(PipeReader.exception)
+    else:
+        print(traceback.format_exc(), file=sys.stderr)
 
 
-class StatusUpdate(typing.NamedTuple):
-    status: str
+def set_exception_handler(fn):
+    global _mainthread_exception_handler
+    _mainthread_exception_handler = fn
+
+
+signal.signal(signal.SIGINT, _handle_interrupt)
+
+
+def _id_generator():
+    id = 0
+    while True:
+        yield id
+
+
+class Signal:
+    _idgen = _id_generator()
+
+    def __init__(self, *, _id=None):
+        self._id = _id or next(self._idgen)
+
+    def __eq__(self, other):
+        return isinstance(other, Signal) and other.id == self._id
+
+    def __hash__(self):
+        return hash(self._id)
+
+    def __reduce__(self):
+        return (Signal, (), {"_id": self._id})
+
+    @property
+    def id(self):
+        return self._id
+
+
+SHUTDOWN = Signal()
 
 
 class PipeReader:
-
     POLL_RATE = 0.05
 
-    def __init__(self, conn, exception_handler, message_handler):
-        self._exc_cb = exception_handler
+    exception = None
+
+    def __init__(self, conn, message_handler=None, *, exception_handler=None):
+        self._exc_cb = exception_handler or self._defaultexception_handler
         self._msg_cb = message_handler
         self._conn = conn
         self._running = True
@@ -45,6 +81,10 @@ class PipeReader:
         # let the thread die on it's own time
         self._running = False
         self._thread = False
+
+    def _defaultexception_handler(self, exc):
+        PipeReader.exception = exc
+        _thread.interrupt_main()
 
     def _mainloop(self):
         while self._running:

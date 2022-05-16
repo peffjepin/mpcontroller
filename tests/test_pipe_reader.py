@@ -13,10 +13,7 @@ class TestPipeReader:
     def setup_method(self):
         a, b = mp.Pipe()
         self.msg_cb = RecordedCallback()
-        self.exc_cb = RecordedCallback()
-        self.reader = PipeReader(
-            a, exception_handler=self.exc_cb, message_handler=self.msg_cb
-        )
+        self.reader = PipeReader(a, message_handler=self.msg_cb)
         self.reader.start()
         self.conn = b
 
