@@ -1,4 +1,5 @@
 import time
+import enum
 import threading
 import collections
 import itertools
@@ -8,8 +9,15 @@ from . import ipc
 from . import exceptions
 
 
-_MESSAGE_HANDLER_INJECTION = "_pyscrape_handlers_"
 _registry = collections.defaultdict(list)
+
+
+class WorkerStatus(enum.Enum):
+    DEAD = 0
+    INIT = 1
+    IDLE = 2
+    BUSY = 3
+    TERM = 4
 
 
 def kill_all(type=None):
@@ -28,41 +36,12 @@ def join_all(type=None):
             controller.join()
 
 
-def message_handler(msg_type):
-    def inner(fn):
-        setattr(fn, _MESSAGE_HANDLER_INJECTION, msg_type)
-        return fn
-
-    return inner
-
-
-def _create_callback_registry(obj):
-    callbacks = collections.defaultdict(list)
-
-    for key in dir(obj):
-        method = getattr(obj, key, None)
-        fn = getattr(method, "__func__", None)
-
-        if not fn:
-            continue
-
-        msg_type = getattr(fn, _MESSAGE_HANDLER_INJECTION, None)
-
-        if not msg_type:
-            continue
-
-        callbacks[msg_type].append(method)
-
-    return callbacks
-
-
 class Controller:
 
-    POLL_RATE = 0.05
+    POLL_INTERVAL = 0.05
     _ID_COUNTER = itertools.count(1)
 
     def __init__(self, worker_type):
-        self._status = Worker.DEAD
         self._worker_type = worker_type
         self._worker = None
         self._reader = None
@@ -76,8 +55,8 @@ class Controller:
         if self._worker:
             raise exceptions.WorkerExistsError(self._worker)
 
-        self._status = Worker.INITIALIZING
         self._worker = self._worker_type(self.id)
+        self._worker.status = WorkerStatus.INIT
         self._reader = ipc.PipeReader(self._worker.conn, self._recv_message)
         self._worker.start()
         self._reader.start()
@@ -85,22 +64,21 @@ class Controller:
 
     def kill(self):
         if self._worker:
-            self.send_message(ipc.SHUTDOWN)
+            self._worker.status = WorkerStatus.TERM
             self._reader.kill()
             self._reader = None
             self._worker.kill()
             self._worker = None
-            self._status = Worker.DEAD
             _registry[self._worker_type].remove(self)
 
     def join(self, timeout=5):
+        deadline = time.time() + timeout
         if self._worker:
-            self.send_message(ipc.SHUTDOWN)
-            self._reader.kill()
-            self._reader = None
-            self._worker.join(timeout)
+            self._worker.status = WorkerStatus.TERM
+            self._worker.join(deadline - time.time())
+            self._reader.join(deadline - time.time())
             self._worker = None
-            self._status = Worker.DEAD
+            self._reader = None
             _registry[self._worker_type].remove(self)
 
     def send_message(self, message):
@@ -112,12 +90,7 @@ class Controller:
 
     @property
     def status(self):
-        if (
-            self._status in Worker.EXIT_STATES
-            and self._worker.exitcode is not None
-        ):
-            self.join()
-        return self._status
+        return self._worker.status
 
     @property
     def worker(self):
@@ -144,18 +117,7 @@ class Controller:
 
 class Worker(mp.Process):
     CONTROLLER = Controller
-
-    DEAD = "dead"
-    IDLE = "idle"
-    BUSY = "busy"
-    UNRESPONSIVE = "unresponsive"
-    INITIALIZING = "initializing"
-    TERMINATING = "terminating"
-    ERROR = "panic"
-    EXIT_STATES = {TERMINATING, ERROR}
-
-    POLL_RATE = 0.05
-    ERROR_TOLERANCE = 1
+    POLL_INTERVAL = 0.05
 
     @classmethod
     def controller(cls):
@@ -171,10 +133,11 @@ class Worker(mp.Process):
         self._conn, self.conn = mp.Pipe()
         self._id = id
         self._workthread = None
-        self._error_streak = 0
+        self._workthread_error = None
         self._jobqueue = None
-        self.__status = Worker.INITIALIZING
-        self._message_callbacks = _create_callback_registry(self)
+        self._message_callbacks = ipc.MessageHandler.get_callback_table(self)
+        self.__status = mp.Value("i")
+        self.__status.value = WorkerStatus.DEAD.value
         super().__init__(target=self._mainloop)
 
     def __repr__(self):
@@ -184,60 +147,69 @@ class Worker(mp.Process):
         """Optional stub for subclasses."""
 
     def main(self):
+        """Optional stub for subclasses."""
+
+    def teardown(self):
+        """Optional stub for subclasses."""
+
+    def _main(self):
         if not self._jobqueue:
-            self.status = Worker.IDLE
-            time.sleep(self.POLL_RATE)
+            self.status = WorkerStatus.IDLE
+            time.sleep(self.POLL_INTERVAL)
         else:
-            self.status = Worker.BUSY
+            self.status = WorkerStatus.BUSY
             job = self._jobqueue.popleft()
             job.do()
 
     @property
     def status(self):
-        return self.__status
+        return WorkerStatus(self.__status.value)
 
     @status.setter
-    def status(self, value):
-        if self.__status in self.EXIT_STATES:
+    def status(self, new_status: WorkerStatus):
+        status = self.status
+        if status == WorkerStatus.TERM:
             # don't change status once terminating has been signaled
             return
-        if value != self.__status:
-            self.__status = value
-            self.send_message(ipc.StatusUpdate(self.status))
+        if new_status != status:
+            self.__status.value = new_status.value
 
     def send_message(self, message):
         self._conn.send(message)
 
-    def report_exception(self, exc):
-        self._error_streak += 1
-        self.send_message(exc)
-        if self._error_streak >= self.ERROR_TOLERANCE:
-            self.status = Worker.ERROR
-
-    def _setup(self):
-        try:
-            self.setup()
-        except Exception as exc:
-            self.report_exception(exc)
-
     def _mainloop(self):
-        self._running = True
-        self._jobqueue = collections.deque()
-        self._setup()
-        self._workthread = threading.Thread(target=self._workthread_target)
-        self._workthread.start()
+        try:
+            exitcode = 0
+            self._jobqueue = collections.deque()
+            self.setup()
+            self._workthread = threading.Thread(target=self._workthread_target)
+            self._workthread.start()
 
-        while self.status not in self.EXIT_STATES:
-            self._process_messages()
-            time.sleep(self.POLL_RATE)
+            while self.status != WorkerStatus.TERM:
+                self._process_messages()
+                time.sleep(self.POLL_INTERVAL)
 
-        self._workthread.join(timeout=1)
+            self._workthread.join(timeout=1)
 
-        if self.status == Worker.ERROR:
-            self.send_message(exceptions.WorkerExitError(self._id))
-            return 1
+            if self._workthread_error is not None:
+                self.send_message(self._workthread_error)
+                exitcode = 1
 
-        return 0
+        except Exception as exc:
+            self.send_message(exc)
+            exitcode = 1
+        finally:
+            try:
+                self.teardown()
+            except Exception as exc:
+                if exitcode == 1:
+                    pass
+                else:
+                    exitcode = 1
+                    self.send_message(exc)
+
+            self.status = WorkerStatus.DEAD
+            return exitcode
 
     def _process_messages(self):
         while self._conn.poll(0):
@@ -247,11 +219,7 @@ class Worker(mp.Process):
             if not job:
                 continue
 
-            if job.urgent:
-                job.do()
-
-            else:
-                self._jobqueue.append(job)
+            self._jobqueue.append(job)
 
     def _message_to_job(self, msg):
         if isinstance(msg, ipc.Signal):
@@ -261,30 +229,22 @@ class Worker(mp.Process):
 
         callbacks = self._message_callbacks[key]
         if not callbacks:
-            return self._handle_unknown_message(msg)
+            raise exceptions.UnknownMessageError(msg, repr(self))
 
         return _Job(callbacks, msg, self)
 
     def _workthread_target(self):
-        while self.status not in self.EXIT_STATES:
+        while self.status != WorkerStatus.TERM:
             try:
+                self._main()
                 self.main()
-                self._error_streak = 0
             except Exception as exc:
-                self.report_exception(exc)
-
-    def _handle_unknown_message(self, msg):
-        exc = exceptions.UnknownMessageError(msg, repr(self))
-        self.send_message(exc)
-
-    @message_handler(ipc.SHUTDOWN)
-    def _internal_shutdown_handler(self):
-        self.status = Worker.TERMINATING
+                self._workthread_error = exc
+                self.status = WorkerStatus.TERM
+                break
 
 
 class _Job:
-    _URGENT_TYPES = {ipc.SHUTDOWN}
-
     def __init__(self, callbacks, msg, worker):
         self._callbacks = callbacks
         self._msg = msg
@@ -297,15 +257,7 @@ class _Job:
             return ()
         return (msg,)
 
-    @property
-    def urgent(self):
-        return self._msg in self._URGENT_TYPES
-
     def do(self):
         args = self.args
         for cb in self._callbacks:
-            try:
-                cb(*args)
-            except Exception as exc:
-                # TODO: consider new exception type
-                self._worker.report_exception(exc)
+            cb(*args)

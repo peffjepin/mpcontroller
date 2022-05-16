@@ -5,6 +5,8 @@ import threading
 import traceback
 import sys
 
+from collections import defaultdict
+
 
 def _mainthread_exception_handler(exc):
     raise exc
@@ -51,16 +53,13 @@ class Signal:
         return self._id
 
 
-SHUTDOWN = Signal()
-
-
 class PipeReader:
     POLL_RATE = 0.05
 
     exception = None
 
     def __init__(self, conn, message_handler=None, *, exception_handler=None):
-        self._exc_cb = exception_handler or self._defaultexception_handler
+        self._exc_cb = exception_handler or self._default_exception_handler
         self._msg_cb = message_handler
         self._conn = conn
         self._running = True
@@ -79,12 +78,16 @@ class PipeReader:
 
     def kill(self):
         # let the thread die on it's own time
+        self._exc_cb = self._dead_exception_handler
         self._running = False
         self._thread = False
 
-    def _defaultexception_handler(self, exc):
+    def _default_exception_handler(self, exc):
         PipeReader.exception = exc
         _thread.interrupt_main()
+
+    def _dead_exception_handler(self, *args):
+        pass
 
     def _mainloop(self):
         while self._running:
@@ -95,3 +98,34 @@ class PipeReader:
                 else:
                     self._msg_cb(msg)
             time.sleep(self.POLL_RATE)
+
+
+class MessageHandler:
+    _registry = defaultdict(lambda: defaultdict(list))
+
+    def __init__(self, msg_type):
+        self._msg_type = msg_type
+
+    def __call__(self, fn):
+        self._fn = fn
+        return self
+
+    def __set_name__(self, cls, name):
+        setattr(cls, name, self._fn)
+        self._mark_class(name, cls)
+
+    def _mark_class(self, name, cls):
+        self._registry[cls][self._msg_type].append(name)
+
+    @classmethod
+    def get_callback_table(cls, object):
+        table = defaultdict(list)
+        for msg_type, names in cls._registry[type(object)].items():
+            for name in names:
+                bound_method = getattr(object, name)
+                table[msg_type].append(bound_method)
+        return table
+
+
+def message_handler(msg_type):
+    return MessageHandler(msg_type)

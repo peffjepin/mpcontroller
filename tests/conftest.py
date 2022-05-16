@@ -87,6 +87,9 @@ def _auto_cleanup_long_running_resources():
     yield
     _kill_processes_and_threads()
 
+    global _mainthread_exception
+    _mainthread_exception = None
+
 
 def _kill_processes_and_threads():
     while _processes:
@@ -156,6 +159,7 @@ def exception_soon(expected_exception):
             if exc == expected_exception:
                 return
             elif exc is not None:
+                print(f"expected: {expected_exception!r}")
                 raise _mainthread_exception
         raise AssertionError(f"never caught {expected_exception!r}")
 

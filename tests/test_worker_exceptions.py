@@ -36,7 +36,8 @@ def test_error_in_signal_handler():
 def test_error_in_normal_teardown_sequence():
     @exception_soon(ErrorInTeardown.EXC)
     def cause():
-        ErrorInTeardown.spawn()
+        controller = ErrorInTeardown.spawn()
+        controller.join()
 
 
 def test_error_in_teardown_after_an_exception_already_occured():
@@ -53,14 +54,14 @@ class ErrorInSetup(Worker):
 
 
 class ErrorInMain(Worker):
-    EXC = Exception("main")
+    EXC = EqualityException("main")
 
     def main(self):
         raise self.EXC
 
 
 class ErrorInMessageHandler(Worker):
-    EXC = Exception("handler")
+    EXC = EqualityException("handler")
 
     @mpc.message_handler(type(example_message))
     def handler(self, msg):
@@ -68,7 +69,7 @@ class ErrorInMessageHandler(Worker):
 
 
 class ErrorInSignalHandler(Worker):
-    EXC = Exception("signal")
+    EXC = EqualityException("signal")
 
     @mpc.message_handler(example_signal)
     def handler(self):
@@ -76,14 +77,14 @@ class ErrorInSignalHandler(Worker):
 
 
 class ErrorInTeardown(Worker):
-    EXC = Exception("handler")
+    EXC = EqualityException("handler")
 
     def teardown(self):
         raise self.EXC
 
 
 class ErrorInMainAndTeardown(Worker):
-    EXC = Exception("main")
+    EXC = EqualityException("main")
 
     def main(self):
         raise self.EXC
