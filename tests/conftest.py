@@ -1,4 +1,5 @@
 import time
+import typing
 import os
 import collections
 
@@ -21,6 +22,14 @@ _processes = list()
 _pipe_readers = list()
 
 
+class ExampleMessage(typing.NamedTuple):
+    content: str
+
+
+example_message = ExampleMessage("testing")
+example_signal = mpc.Signal()
+
+
 class PipeReader(mpc.PipeReader):
     POLL_RATE = FAST_POLL
 
@@ -37,8 +46,22 @@ class Worker(mpc.Worker):
         super().__init__(*args, **kwds)
 
 
+class BlankWorker(Worker):
+    pass
+
+
 class Controller(mpc.Controller):
     POLL_RATE = FAST_POLL
+
+
+class RecordedController(Controller):
+    def __init__(self, *args, **kwargs):
+        self.msg_cb = RecordedCallback()
+        super().__init__(*args, **kwargs)
+
+    @mpc.message_handler(ExampleMessage)
+    def handler(self, msg):
+        self.msg_cb(msg)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -116,6 +139,23 @@ def doesnt_happen(fn):
     _doesnt_succeed_before_timeout(fn, VERY_FAST_TIMEOUT)
 
 
+def exception_soon(expected_exception):
+    # expected_exception will be compared with __eq__
+    def inner(fn):
+        try:
+            fn()
+            time.sleep(FAST_TIMEOUT)
+        except Exception as exc:
+            if exc == expected_exception:
+                return
+            else:
+                raise 
+        else:
+            raise AssertionError(f"didn't catch {expected_exception!r}")
+
+    return inner
+
+
 class RecordedCallback:
     def __init__(self):
         self._n = -1
@@ -139,19 +179,11 @@ class RecordedCallback:
         return self._args[self._n]
 
     @property
-    def arg(self):
-        nargs = len(self.args)
-        nkwargs = len(self.kwargs)
-        if nargs + nkwargs > 1:
-            raise ValueError("total args given > 1.. which arg is ambiguous")
-        if nargs:
-            return self.args[0]
-        elif nkwargs:
-            return next(self.kwargs.values())
-
-    @property
     def kwargs(self):
         return self._kwargs[self._n]
+
+    def called_with(self, *args, **kwargs):
+        return self.args == args and self.kwargs == kwargs
 
 
 @pytest.fixture
@@ -167,7 +199,8 @@ class EqualityException(Exception):
     def __eq__(self, other):
         return isinstance(other, EqualityException) and self.msg == other.msg
 
+    def __reduce__(self):
+        return (EqualityException, (self.msg,))
 
-@pytest.fixture
-def exception():
-    return EqualityException("testing exception")
+
+example_exception = EqualityException("testing")
