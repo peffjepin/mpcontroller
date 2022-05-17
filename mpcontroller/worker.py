@@ -40,7 +40,7 @@ class _Registry(collections.defaultdict):
 
     def join_worker(self, worker, timeout):
         controller = self._idmap[worker.id]
-        worker.status = WorkerStatus.TERM
+        controller.send(ipc.Terminate)
         worker.join(timeout)
         self[type(worker)].remove(controller)
 
@@ -69,9 +69,9 @@ def kill_all(type=None):
         controller.kill()
 
 
-def join_all(type=None):
+def join_all(type=None, timeout=None):
     for controller in _registry[type].copy():
-        controller.join()
+        controller.join(timeout)
 
 
 class WorkerStatus(enum.Enum):
@@ -79,7 +79,6 @@ class WorkerStatus(enum.Enum):
     INIT = 1
     IDLE = 2
     BUSY = 3
-    TERM = 4
 
 
 class Controller:
@@ -199,12 +198,7 @@ class Worker(mp.Process):
 
     @status.setter
     def status(self, new_status: WorkerStatus):
-        status = self.status
-        if status == WorkerStatus.TERM:
-            # don't change status once terminating has been signaled
-            return
-        if new_status != status:
-            self.__status.value = new_status.value
+        self.__status.value = new_status.value
 
     def send(self, message):
         self._conn.send(message)
@@ -227,6 +221,7 @@ class Worker(mp.Process):
         self._workthread_exception = None
         self._jobqueue = None
         self.__status = mp.Value("i", WorkerStatus.DEAD.value, lock=False)
+        self._running = False
         super().__init__(target=self._mainloop)
 
     def __repr__(self):
@@ -238,6 +233,7 @@ class Worker(mp.Process):
     def _mainloop(self):
         try:
             exitcode = 0
+            self._running = True
             self._jobqueue = collections.deque()
             self.setup()
             self._workthread = threading.Thread(
@@ -245,7 +241,7 @@ class Worker(mp.Process):
             )
             self._workthread.start()
 
-            while self.status != WorkerStatus.TERM:
+            while self._running:
                 self._process_messages()
                 self._clear_signals()
                 time.sleep(self.POLL_INTERVAL)
@@ -307,11 +303,15 @@ class Worker(mp.Process):
 
     def _workthread_mainloop(self):
         try:
-            while self.status != WorkerStatus.TERM:
+            while self._running:
                 self._main()
         except Exception as exc:
             self._workthread_exception = exc
-            self.status = WorkerStatus.TERM
+            self._running = False
+
+    @ipc.signal_handler(ipc.Terminate)
+    def _handle_termination_signal(self):
+        self._running = False
 
 
 class _Job:

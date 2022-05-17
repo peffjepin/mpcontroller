@@ -95,6 +95,9 @@ class BlankWorker(Worker):
 class Controller(mpc.Controller):
     POLL_INTERVAL = FAST_POLL
 
+    def join(self, timeout=None):
+        super().join(timeout or FAST_TIMEOUT)
+
 
 class RecordedController(Controller):
     def __init__(self, *args, **kwargs):

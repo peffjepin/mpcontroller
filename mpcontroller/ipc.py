@@ -65,6 +65,10 @@ class Signal:
         return self._shared.value != Signal.CLEAR
 
 
+class Terminate(Signal):
+    pass
+
+
 class PipeReader:
     POLL_INTERVAL = 0.05
 
@@ -168,11 +172,21 @@ class CallbackMarker:
 
     @classmethod
     def _make_callback_table(cls, object, registry):
+        check_classes = type(object).__mro__[:-1]
+        seen = set()
+
         table = defaultdict(list)
-        for key, names in registry[type(object)].items():
-            for name in names:
-                bound_method = getattr(object, name)
-                table[key].append(bound_method)
+
+        for cls in check_classes:
+            for key, names in registry[cls].items():
+                for name in names:
+                    if name in seen:
+                        continue
+                    else:
+                        seen.add(name)
+                    bound_method = getattr(object, name)
+                    table[key].append(bound_method)
+
         return table
 
 
