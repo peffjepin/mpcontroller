@@ -18,25 +18,51 @@ if os.environ.get("CI", None):
 VERY_FAST_TIMEOUT = FAST_TIMEOUT / 10
 FAST_POLL = FAST_TIMEOUT / 10_000
 
-_processes = list()
 _pipe_readers = list()
-_interrupting_exception = None
-_expected_exception = None
 
 
-class _DontIgnoreException(Exception):
+class _MainThreadInterruption:
+    _exception = None
+    expecting = False
+
+    @classmethod
+    def handler(cls, exc):
+        # if we're not expecting a mainthread interrupt raise the exception
+        if not cls.expecting:
+            raise _UnexpectedInterruption(
+                f"main thread interrupted unexpectedly:\n {exc!r}"
+            )
+        # else just set it as the exception value for use elsewhere
+        cls.set_exception(exc)
+
+    @classmethod
+    def consume_exception(cls):
+        if cls._exception is None:
+            return
+        else:
+            exc = cls._exception
+            cls._exception = None
+            return exc
+
+    @classmethod
+    def set_exception(cls, exc):
+        if cls._exception is None:
+            cls._exception = exc
+        else:
+            raise _UnexpectedInterruption(
+                "main thread was interrupted again before a previous"
+                f"interruption could be handled...\nprev: {cls._exception!r}"
+                f"\nnew: {exc!r}"
+            )
+
+    @classmethod
+    def clear(cls):
+        cls._exception = None
+        cls.expecting = None
+
+
+class _UnexpectedInterruption(Exception):
     pass
-
-
-def _interrupting_exception_hook(exc):
-    global _interrupting_exception
-
-    if _expected_exception is None:
-        raise _DontIgnoreException(
-            f"a thread or process died unexpectedly\n: {exc!r}"
-        )
-
-    _interrupting_exception = exc
 
 
 class ExampleMessage(typing.NamedTuple):
@@ -60,10 +86,6 @@ class PipeReader(ipc.PipeReader):
 
 class Worker(mpc.Worker):
     POLL_INTERVAL = FAST_POLL
-
-    def __init__(self, *args, **kwds):
-        _processes.append(self)
-        super().__init__(*args, **kwds)
 
 
 class BlankWorker(Worker):
@@ -93,29 +115,20 @@ def _patch_test_environment():
     worker.Controller = Controller
     worker.Worker = Worker
     ipc.PipeReader = PipeReader
-    ipc.set_thread_exception_handler(_interrupting_exception_hook)
+    ipc.MainThreadInterruption.handler = _MainThreadInterruption.handler
 
 
 @pytest.fixture(autouse=True, scope="function")
 def _per_test_cleanup():
     yield
-    _kill_processes_and_threads()
 
-    global _interrupting_exception
-    _interrupting_exception = None
-
-    global _expected_exception
-    _expected_exception = None
-
+    _MainThreadInterruption.clear()
+    mpc.kill_all()
+    _kill_pipe_readers()
     worker._registry.clear()
 
 
-def _kill_processes_and_threads():
-    while _processes:
-        try:
-            _processes.pop().kill()
-        except Exception:
-            pass
+def _kill_pipe_readers():
     while _pipe_readers:
         try:
             _pipe_readers.pop().kill()
@@ -130,7 +143,7 @@ def _succeeds_before_timeout(fn, timeout):
         try:
             fn()
         except Exception as exc:
-            if isinstance(exc, _DontIgnoreException):
+            if isinstance(exc, _UnexpectedInterruption):
                 raise exc
             if time.time() < deadline:
                 continue
@@ -147,14 +160,14 @@ def _doesnt_succeed_before_timeout(fn, timeout):
         try:
             fn()
         except Exception as exc:
-            if isinstance(exc, _DontIgnoreException):
+            if isinstance(exc, _UnexpectedInterruption):
                 raise exc
             if time.time() < deadline:
                 continue
             else:
                 break
         else:
-            raise AssertionError("it happened")
+            raise AssertionError(f"{fn!r} succeeded")
 
 
 def happens_before(timeout):
@@ -173,24 +186,23 @@ def doesnt_happen(fn):
 
 
 def exception_soon(expected_exception):
+    # expecting an exception to interrupt the main thread from a daemon
     # expected_exception will be compared with __eq__
     def inner(fn):
-        global _expected_exception
-        _expected_exception = expected_exception
-
         try:
+            _MainThreadInterruption.expecting = True
             fn()
             deadline = time.time() + FAST_TIMEOUT
             while time.time() < deadline:
-                exc = _interrupting_exception
+                exc = _MainThreadInterruption.consume_exception()
                 if exc == expected_exception:
                     return
                 elif exc is not None:
                     print(f"expected: {expected_exception!r}")
-                    raise _interrupting_exception
+                    raise exc
             raise AssertionError(f"never caught {expected_exception!r}")
         finally:
-            _expected_exception = None
+            _MainThreadInterruption.clear()
 
     return inner
 

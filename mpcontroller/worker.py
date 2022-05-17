@@ -97,6 +97,7 @@ class Controller:
     def kill(self):
         if self._worker:
             _registry.kill_worker(self._worker)
+            self._reader.running = False
             self._worker = None
             self._reader.kill()
             self._reader = None
@@ -104,6 +105,7 @@ class Controller:
     def join(self, timeout=None):
         if self._worker:
             _registry.join_worker(self._worker, timeout)
+            self._reader.running = False
             self._worker = None
             self._reader.join(timeout)
             self._reader = None
@@ -130,7 +132,7 @@ class Controller:
 
     def __init__(self, worker_type, id):
         self.worker_type = worker_type
-        self.message_callbacks = ipc.IpcHandler.get_message_callback_table(
+        self.message_callbacks = ipc.CallbackMarker.get_message_callback_table(
             self
         )
         self._worker = None
@@ -208,10 +210,12 @@ class Worker(mp.Process):
         self._conn.send(message)
 
     def __init__(self, id):
-        self.message_callbacks = ipc.IpcHandler.get_message_callback_table(
+        self.message_callbacks = ipc.CallbackMarker.get_message_callback_table(
             self
         )
-        self.signal_callbacks = ipc.IpcHandler.get_signal_callback_table(self)
+        self.signal_callbacks = ipc.CallbackMarker.get_signal_callback_table(
+            self
+        )
         self.signals = {
             sig_type: sig_type(mp.Value("i", ipc.Signal.CLEAR, lock=False))
             for sig_type in self.signal_callbacks
