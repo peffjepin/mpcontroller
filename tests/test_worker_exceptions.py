@@ -77,7 +77,7 @@ class ErrorInSignalHandler(Worker):
 
 
 class ErrorInTeardown(Worker):
-    EXC = EqualityException("handler")
+    EXC = EqualityException("teardown")
 
     def teardown(self):
         raise self.EXC

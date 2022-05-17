@@ -67,6 +67,7 @@ class PipeReader:
             self._running = False
             self._thread.join(timeout)
             self._thread = None
+            self._process_messages() 
 
     def kill(self):
         # let the thread die on it's own time
@@ -81,15 +82,18 @@ class PipeReader:
     def _dead_exception_handler(self, *args):
         pass
 
+    def _process_messages(self):
+        while self._conn.poll(0):
+            msg = self._conn.recv()
+            if isinstance(msg, Exception):
+                self._exc_cb(msg)
+            else:
+                self._msg_cb(msg)
+
     def _mainloop(self):
         try:
             while self._running:
-                while self._conn.poll(0):
-                    msg = self._conn.recv()
-                    if isinstance(msg, Exception):
-                        self._exc_cb(msg)
-                    else:
-                        self._msg_cb(msg)
+                self._process_messages()
                 time.sleep(self.POLL_INTERVAL)
         except Exception as exc:
             self._exc_cb(exc)
