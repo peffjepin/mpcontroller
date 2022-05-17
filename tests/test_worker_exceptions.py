@@ -1,4 +1,7 @@
+import pytest
+
 from .conftest import Worker
+from .conftest import BlankWorker
 from .conftest import EqualityException
 from .conftest import ExampleSignal
 from .conftest import example_message
@@ -23,14 +26,14 @@ def test_error_in_message_handler():
     @exception_soon(ErrorInMessageHandler.EXC)
     def cause():
         controller = ErrorInMessageHandler.spawn()
-        controller.send_message(example_message)
+        controller.send(example_message)
 
 
 def test_error_in_signal_handler():
     @exception_soon(ErrorInSignalHandler.EXC)
     def cause():
         controller = ErrorInSignalHandler.spawn()
-        controller.send_message(ExampleSignal)
+        controller.send(ExampleSignal)
 
 
 def test_error_in_normal_teardown_sequence():
@@ -44,6 +47,13 @@ def test_error_in_teardown_after_an_exception_already_occured():
     @exception_soon(ErrorInMainAndTeardown.EXC)
     def cause():
         ErrorInMainAndTeardown.spawn()
+
+
+def test_worker_exists_error_if_worker_already_spawned():
+    controller = BlankWorker.spawn()
+
+    with pytest.raises(mpc.WorkerExistsError):
+        controller.spawn()
 
 
 class ErrorInSetup(Worker):

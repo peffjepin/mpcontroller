@@ -5,7 +5,6 @@ from .worker import join_all
 from .worker import message_all
 from .worker import WorkerStatus
 from .exceptions import WorkerExistsError
-from .exceptions import WorkerExitError
 from .exceptions import UnknownMessageError
 from .ipc import message_handler
 from .ipc import signal_handler

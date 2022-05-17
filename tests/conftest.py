@@ -20,7 +20,7 @@ FAST_POLL = FAST_TIMEOUT / 10_000
 
 _processes = list()
 _pipe_readers = list()
-_mainthread_exception = None
+_interrupting_exception = None
 _expected_exception = None
 
 
@@ -28,15 +28,15 @@ class _DontIgnoreException(Exception):
     pass
 
 
-def _mainthread_exception_hook(exc):
-    global _mainthread_exception
+def _interrupting_exception_hook(exc):
+    global _interrupting_exception
 
     if _expected_exception is None:
         raise _DontIgnoreException(
             f"a thread or process died unexpectedly\n: {exc!r}"
         )
 
-    _mainthread_exception = exc
+    _interrupting_exception = exc
 
 
 class ExampleMessage(typing.NamedTuple):
@@ -93,7 +93,7 @@ def _patch_test_environment():
     worker.Controller = Controller
     worker.Worker = Worker
     ipc.PipeReader = PipeReader
-    ipc.set_exception_handler(_mainthread_exception_hook)
+    ipc.set_thread_exception_handler(_interrupting_exception_hook)
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -101,8 +101,11 @@ def _per_test_cleanup():
     yield
     _kill_processes_and_threads()
 
-    global _mainthread_exception
-    _mainthread_exception = None
+    global _interrupting_exception
+    _interrupting_exception = None
+
+    global _expected_exception
+    _expected_exception = None
 
     worker._registry.clear()
 
@@ -179,12 +182,12 @@ def exception_soon(expected_exception):
             fn()
             deadline = time.time() + FAST_TIMEOUT
             while time.time() < deadline:
-                exc = _mainthread_exception
+                exc = _interrupting_exception
                 if exc == expected_exception:
                     return
                 elif exc is not None:
                     print(f"expected: {expected_exception!r}")
-                    raise _mainthread_exception
+                    raise _interrupting_exception
             raise AssertionError(f"never caught {expected_exception!r}")
         finally:
             _expected_exception = None

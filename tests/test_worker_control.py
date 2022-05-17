@@ -10,14 +10,12 @@ def test_controller_has_no_worker_process_on_init():
     controller = BlankWorker.controller()
 
     assert controller.pid is None
-    assert controller.worker is None
 
 
 def test_spawning_a_worker_from_the_class():
     controller = BlankWorker.spawn()
 
     assert controller.pid is not None
-    assert controller.worker is not None
 
 
 def test_spawning_a_worker_from_controller():
@@ -25,7 +23,6 @@ def test_spawning_a_worker_from_controller():
     controller.spawn()
 
     assert controller.pid is not None
-    assert controller.worker is not None
 
 
 def test_specifying_controller_type():
@@ -39,7 +36,6 @@ def test_killing_a_worker():
     controller.kill()
 
     assert controller.pid is None
-    assert controller.worker is None
 
 
 def test_killing_all_workers():
@@ -47,7 +43,6 @@ def test_killing_all_workers():
     mpc.kill_all()
 
     assert all(c.pid is None for c in controllers)
-    assert all(c.worker is None for c in controllers)
 
 
 def test_killing_all_workers_of_a_given_type():
@@ -57,10 +52,8 @@ def test_killing_all_workers_of_a_given_type():
     mpc.kill_all(Worker1)
 
     assert all(c.pid is None for c in w1)
-    assert all(c.worker is None for c in w1)
 
     assert all(c.pid is not None for c in w2)
-    assert all(c.worker is not None for c in w2)
 
 
 def test_joining_a_worker():
@@ -70,7 +63,6 @@ def test_joining_a_worker():
     @happens_soon
     def worker_joins():
         controller.pid is None
-        controller.worker is None
 
 
 def test_joining_all_workers():
@@ -80,7 +72,6 @@ def test_joining_all_workers():
     @happens_soon
     def all_workers_join():
         assert all(c.pid is None for c in controllers)
-        assert all(c.worker is None for c in controllers)
 
 
 def test_joining_all_workers_of_a_given_type():
@@ -92,10 +83,8 @@ def test_joining_all_workers_of_a_given_type():
     @happens_soon
     def worker1_type_joins():
         assert all(c.pid is None for c in w1)
-        assert all(c.worker is None for c in w1)
 
         assert all(c.pid is not None for c in w2)
-        assert all(c.worker is not None for c in w2)
 
 
 class BlankController(Controller):

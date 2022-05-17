@@ -6,20 +6,27 @@ import threading
 from collections import defaultdict
 
 
-def _mainthread_exception_handler(exc):
+def _thread_interrupt_exception_handler(exc):
+    # handler for the _thread.interrupt_main() call, effectively
+    # redirecting the error from daemon thread into the main thread
     raise exc
 
 
 def _handle_interrupt(*args):
-    if PipeReader.exception is not None:
-        _mainthread_exception_handler(PipeReader.exception)
+    # if PipeReader set it's exception attribute then it caused the interrupt
+    exc = PipeReader.exception
+    if exc is not None:
+        PipeReader.exception = None
+        _thread_interrupt_exception_handler(exc)
+
+    # otherwise it's really a keyboard interrupt
     else:
         raise KeyboardInterrupt()
 
 
-def set_exception_handler(fn):
-    global _mainthread_exception_handler
-    _mainthread_exception_handler = fn
+def set_thread_exception_handler(fn):
+    global _thread_interrupt_exception_handler
+    _thread_interrupt_exception_handler = fn
 
 
 signal.signal(signal.SIGINT, _handle_interrupt)

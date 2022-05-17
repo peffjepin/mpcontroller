@@ -1,6 +1,7 @@
 import pytest
 
 from .conftest import happens_soon
+from .conftest import doesnt_happen
 from .conftest import exception_soon
 from .conftest import Worker
 from .conftest import Controller
@@ -17,10 +18,10 @@ def test_sending_a_worker_an_unknown_message():
     controller = BlankWorker.spawn()
 
     with pytest.raises(mpc.UnknownMessageError) as excinfo:
-        controller.send_message(example_message)
+        controller.send(example_message)
 
     assert excinfo.value == mpc.UnknownMessageError(
-        example_message, controller.worker
+        example_message, controller._worker
     )
 
 
@@ -28,27 +29,26 @@ def test_sending_a_worker_an_unknown_signal():
     controller = BlankWorker.spawn()
 
     with pytest.raises(mpc.UnknownMessageError) as excinfo:
-        controller.send_message(ExampleSignal)
+        controller.send(ExampleSignal)
 
     assert excinfo.value == mpc.UnknownMessageError(
-        ExampleSignal, controller.worker
+        ExampleSignal, controller._worker
     )
 
 
 def test_sending_a_controller_an_unknown_message():
-    controller = Controller(Echo)
-    controller.spawn()
+    controller = EchoWithIncompatibleController.spawn()
 
     exception = mpc.UnknownMessageError(example_message, repr(controller))
 
     @exception_soon(exception)
     def cause():
-        controller.send_message(example_message)
+        controller.send(example_message)
 
 
 def test_worker_handles_message_with_registered_callback():
     controller = Echo.spawn()
-    controller.send_message(example_message)
+    controller.send(example_message)
 
     @happens_soon
     def message_is_sent_back():
@@ -57,16 +57,20 @@ def test_worker_handles_message_with_registered_callback():
 
 def test_worker_handles_signal_with_registered_callback():
     controller = Echo.spawn()
-    controller.send_message(ExampleSignal)
+    controller.send(ExampleSignal)
 
     @happens_soon
     def message_is_sent_back():
         controller.msg_cb.assert_called_with(example_message)
 
+    @doesnt_happen
+    def more_messages_arrive():
+        assert controller.msg_cb.called > 1
+
 
 def test_worker_can_register_multiple_callbacks_for_a_single_message():
     controller = EchoTwice.spawn()
-    controller.send_message(example_message)
+    controller.send(example_message)
 
     @happens_soon
     def message_is_sent_back_twice():
@@ -79,7 +83,7 @@ def test_worker_handles_messages_in_the_order_sent():
 
     example_messages = [ExampleMessage(i) for i in range(3)]
     for m in example_messages:
-        controller.send_message(m)
+        controller.send(m)
 
     @happens_soon
     def responses_arive_in_order():
@@ -115,11 +119,11 @@ class Echo(Worker):
 
     @mpc.message_handler(ExampleMessage)
     def echomsg(self, msg):
-        self.send_message(msg)
+        self.send(msg)
 
     @mpc.signal_handler(ExampleSignal)
     def echosig(self):
-        self.send_message(example_message)
+        self.send(example_message)
 
 
 class EchoTwice(Worker):
@@ -127,8 +131,16 @@ class EchoTwice(Worker):
 
     @mpc.message_handler(type(example_message))
     def echomsg1(self, msg):
-        self.send_message(example_message)
+        self.send(example_message)
 
     @mpc.message_handler(type(example_message))
     def echomsg2(self, msg):
-        self.send_message(example_message)
+        self.send(example_message)
+
+
+class EchoWithIncompatibleController(Worker):
+    CONTROLLER = Controller
+
+    @mpc.message_handler(ExampleMessage)
+    def echomsg(self, msg):
+        self.send(msg)

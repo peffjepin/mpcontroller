@@ -70,17 +70,17 @@ class VerboseWorker(Worker):
     TEARDOWN_MESSAGE = ExampleMessage("teardown")
 
     def setup(self):
-        self.send_message(self.SETUP_MESSAGE)
+        self.send(self.SETUP_MESSAGE)
 
     def main(self):
-        self.send_message(self.MAIN_MESSAGE)
+        self.send(self.MAIN_MESSAGE)
 
     def teardown(self):
-        self.send_message(self.TEARDOWN_MESSAGE)
+        self.send(self.TEARDOWN_MESSAGE)
 
     @mpc.message_handler(ExampleMessage)
     def handler(self, _):
-        self.send_message(self.HANDLER_MESSAGE)
+        self.send(self.HANDLER_MESSAGE)
 
 
 class VerboseWorkerErrorInMain(VerboseWorker):

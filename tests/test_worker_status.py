@@ -29,7 +29,7 @@ def test_idle_when_not_handling_messages():
 
 def test_busy_when_handling_messages():
     controller = BusyMessageWorker.spawn()
-    controller.send_message(example_message)
+    controller.send(example_message)
 
     @happens_soon
     def worker_goes_busy():

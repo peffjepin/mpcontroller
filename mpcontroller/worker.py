@@ -2,14 +2,76 @@ import time
 import enum
 import threading
 import collections
-import itertools
 import multiprocessing as mp
 
 from . import ipc
 from . import exceptions
 
 
-_registry = collections.defaultdict(list)
+def _sequential_ids():
+    id = 0
+    while True:
+        yield id
+        id += 1
+
+
+class _Registry(collections.defaultdict):
+    def __init__(self):
+        self._idgen = _sequential_ids()
+        self._idmap = dict()
+        super().__init__(list)
+
+    def __getitem__(self, key):
+        if key is None:
+            return sum(self.values(), [])
+        return super().__getitem__(key)
+
+    def spawn_worker(self, controller):
+        worker = controller.worker_type(controller.id)
+        worker.status = WorkerStatus.INIT
+        worker.start()
+        self[type(worker)].append(controller)
+        return worker
+
+    def kill_worker(self, worker):
+        controller = self._idmap[worker.id]
+        worker.kill()
+        self[type(worker)].remove(controller)
+
+    def join_worker(self, worker, timeout):
+        controller = self._idmap[worker.id]
+        worker.status = WorkerStatus.TERM
+        worker.join(timeout)
+        self[type(worker)].remove(controller)
+
+    def controller(self, controller_type, worker_type):
+        id = next(self._idgen)
+        controller = controller_type(worker_type, id)
+        self._idmap[id] = controller
+        return controller
+
+    def clear(self):
+        super().clear()
+        self._idmap.clear()
+        self._idgen = _sequential_ids()
+
+
+_registry = _Registry()
+
+
+def message_all(message, type=None):
+    for controller in _registry[type].copy():
+        controller.send(message)
+
+
+def kill_all(type=None):
+    for controller in _registry[type].copy():
+        controller.kill()
+
+
+def join_all(type=None):
+    for controller in _registry[type].copy():
+        controller.join()
 
 
 class WorkerStatus(enum.Enum):
@@ -20,91 +82,39 @@ class WorkerStatus(enum.Enum):
     TERM = 4
 
 
-def message_all(msg, type=None):
-    for controller_type, controller_list in _registry.items():
-        if type and type != controller_type:
-            continue
-        for controller in controller_list.copy():
-            controller.send_message(msg)
-
-
-def kill_all(type=None):
-    for controller_type, controller_list in _registry.items():
-        if type and type != controller_type:
-            continue
-        for controller in controller_list.copy():
-            controller.kill()
-
-
-def join_all(type=None):
-    for controller_type, controller_list in _registry.items():
-        if type and type != controller_type:
-            continue
-        for controller in controller_list.copy():
-            controller.join()
-
-
 class Controller:
-
     POLL_INTERVAL = 0.05
-    _ID_COUNTER = itertools.count(1)
-
-    def __init__(self, worker_type):
-        self._worker_type = worker_type
-        self._worker = None
-        self._reader = None
-        self._id = next(self._ID_COUNTER)
-        self.message_callbacks = ipc.IpcHandler.get_message_callback_table(
-            self
-        )
-
-    def __repr__(self):
-        worker = f"Worker={self._worker_type.__name__}"
-        return f"<{self.__class__.__name__}: {worker}, id={self.id}>"
 
     def spawn(self):
         if self._worker:
             raise exceptions.WorkerExistsError(self._worker)
 
-        self._worker = self._worker_type(self.id)
-        self._worker.status = WorkerStatus.INIT
+        self._worker = _registry.spawn_worker(self)
         self._reader = ipc.PipeReader(self._worker.conn, self._recv_message)
-        self._worker.start()
         self._reader.start()
-        _registry[self._worker_type].append(self)
+        return self
 
     def kill(self):
         if self._worker:
-            self._worker.status = WorkerStatus.TERM
+            _registry.kill_worker(self._worker)
+            self._worker = None
             self._reader.kill()
             self._reader = None
-            self._worker.kill()
-            self._worker = None
-            _registry[self._worker_type].remove(self)
 
-    def join(self, timeout=5):
-        deadline = time.time() + timeout
+    def join(self, timeout=None):
         if self._worker:
-            self._worker.status = WorkerStatus.TERM
-            self._worker.join(deadline - time.time())
-            self._reader.join(deadline - time.time())
+            _registry.join_worker(self._worker, timeout)
             self._worker = None
+            self._reader.join(timeout)
             self._reader = None
-            _registry[self._worker_type].remove(self)
 
-    def send_message(self, message):
-        if not isinstance(message, type):
-            if type(message) not in self._worker.message_callbacks:
-                raise exceptions.UnknownMessageError(message, self.worker)
-            self._worker.conn.send(message)
+    def send(self, message_or_signal):
+        if isinstance(message_or_signal, type) and issubclass(
+            message_or_signal, ipc.Signal
+        ):
+            self._send_signal(message_or_signal)
         else:
-            self._send_signal(message)
-
-    def _send_signal(self, signal_type):
-        if signal_type not in self._worker.signal_callbacks:
-            raise exceptions.UnknownMessageError(signal_type, self.worker)
-        else:
-            self._worker.signals[signal_type].set()
+            self._send(message_or_signal)
 
     @property
     def id(self):
@@ -115,63 +125,49 @@ class Controller:
         return self._worker.status if self._worker else WorkerStatus.DEAD
 
     @property
-    def worker(self):
-        if self._worker is None:
-            return None
-        else:
-            # dont leak the worker api, use repr instead
-            return repr(self._worker)
-
-    @property
     def pid(self):
         return self._worker.pid if self._worker else None
 
-    def _recv_exception_message(self, exc):
-        self.exceptions.append(exc)
+    def __init__(self, worker_type, id):
+        self.worker_type = worker_type
+        self.message_callbacks = ipc.IpcHandler.get_message_callback_table(
+            self
+        )
+        self._worker = None
+        self._reader = None
+        self._id = id
 
-    def _recv_message(self, msg):
-        key = type(msg)
+    def __repr__(self):
+        worker = f"Worker={self.worker_type.__name__}"
+        return f"<{self.__class__.__name__}: {worker}, id={self.id}>"
+
+    def __str__(self):
+        return repr(self)
+
+    def _send_signal(self, signal_type):
+        if signal_type not in self._worker.signal_callbacks:
+            raise exceptions.UnknownMessageError(signal_type, self._worker)
+        else:
+            self._worker.signals[signal_type].set()
+
+    def _send(self, message):
+        if type(message) not in self._worker.message_callbacks:
+            raise exceptions.UnknownMessageError(message, self._worker)
+        self._worker.conn.send(message)
+
+    def _recv_message(self, message):
+        key = type(message)
 
         if key not in self.message_callbacks:
-            raise exceptions.UnknownMessageError(msg, repr(self))
+            raise exceptions.UnknownMessageError(message, self)
 
-        for cb in self.message_callbacks[key]:
-            cb(msg)
+        for callback in self.message_callbacks[key]:
+            callback(message)
 
 
 class Worker(mp.Process):
     CONTROLLER = Controller
     POLL_INTERVAL = 0.05
-
-    @classmethod
-    def controller(cls):
-        return cls.CONTROLLER(cls)
-
-    @classmethod
-    def spawn(cls):
-        controller = cls.CONTROLLER(cls)
-        controller.spawn()
-        return controller
-
-    def __init__(self, id):
-        self._conn, self.conn = mp.Pipe()
-        self._id = id
-        self._workthread = None
-        self._workthread_error = None
-        self._jobqueue = None
-        self.message_callbacks = ipc.IpcHandler.get_message_callback_table(
-            self
-        )
-        self.signal_callbacks = ipc.IpcHandler.get_signal_callback_table(self)
-        self.signals = {
-            sig_type: sig_type(mp.Value("i"))
-            for sig_type in self.signal_callbacks
-        }
-        self.__status = mp.Value("i", WorkerStatus.DEAD.value)
-        super().__init__(target=self._mainloop)
-
-    def __repr__(self):
-        return f"<{self.__class__.__name__}: {self._id}>"
 
     def setup(self):
         """Optional stub for subclasses."""
@@ -182,19 +178,22 @@ class Worker(mp.Process):
     def teardown(self):
         """Optional stub for subclasses."""
 
-    def _main(self):
-        if not self._jobqueue:
-            self.status = WorkerStatus.IDLE
-            time.sleep(self.POLL_INTERVAL)
-        else:
-            self.status = WorkerStatus.BUSY
-            job = self._jobqueue.popleft()
-            job.do()
+    @classmethod
+    def controller(cls):
+        return _registry.controller(cls.CONTROLLER, cls)
+
+    @classmethod
+    def spawn(cls):
+        controller = cls.controller()
+        return controller.spawn()
+
+    @property
+    def id(self):
+        return self._id
 
     @property
     def status(self):
-        with self.__status.get_lock():
-            return WorkerStatus(self.__status.value)
+        return WorkerStatus(self.__status.value)
 
     @status.setter
     def status(self, new_status: WorkerStatus):
@@ -203,18 +202,43 @@ class Worker(mp.Process):
             # don't change status once terminating has been signaled
             return
         if new_status != status:
-            with self.__status.get_lock():
-                self.__status.value = new_status.value
+            self.__status.value = new_status.value
 
-    def send_message(self, message):
+    def send(self, message):
         self._conn.send(message)
+
+    def __init__(self, id):
+        self.message_callbacks = ipc.IpcHandler.get_message_callback_table(
+            self
+        )
+        self.signal_callbacks = ipc.IpcHandler.get_signal_callback_table(self)
+        self.signals = {
+            sig_type: sig_type(mp.Value("i"))
+            for sig_type in self.signal_callbacks
+        }
+
+        self._conn, self.conn = mp.Pipe()
+        self._id = id
+        self._workthread = None
+        self._workthread_exception = None
+        self._jobqueue = None
+        self.__status = mp.Value("i", WorkerStatus.DEAD.value)
+        super().__init__(target=self._mainloop)
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__}: {self._id}>"
+
+    def __str__(self):
+        return repr(self)
 
     def _mainloop(self):
         try:
             exitcode = 0
             self._jobqueue = collections.deque()
             self.setup()
-            self._workthread = threading.Thread(target=self._workthread_target)
+            self._workthread = threading.Thread(
+                target=self._workthread_mainloop
+            )
             self._workthread.start()
 
             while self.status != WorkerStatus.TERM:
@@ -224,32 +248,38 @@ class Worker(mp.Process):
 
             self._workthread.join(timeout=1)
 
-            if self._workthread_error is not None:
-                self.send_message(self._workthread_error)
+            if self._workthread_exception is not None:
+                self.send(self._workthread_exception)
                 exitcode = 1
 
         except Exception as exc:
-            self.send_message(exc)
+            self.send(exc)
             exitcode = 1
 
         try:
             self.teardown()
         except Exception as exc:
             if exitcode == 0:
-                self.send_message(exc)
+                self.send(exc)
                 exitcode = 1
 
         self.status = WorkerStatus.DEAD
         return exitcode
 
+    def _main(self):
+        if not self._jobqueue:
+            self.status = WorkerStatus.IDLE
+            time.sleep(self.POLL_INTERVAL)
+        else:
+            self.status = WorkerStatus.BUSY
+            job = self._jobqueue.popleft()
+            job.do()
+        self.main()
+
     def _process_messages(self):
         while self._conn.poll(0):
-            msg = self._conn.recv()
-            job = self._message_to_job(msg)
-
-            if not job:
-                continue
-
+            message = self._conn.recv()
+            job = self._message_to_job(message)
             self._jobqueue.append(job)
 
     def _clear_signals(self):
@@ -257,48 +287,34 @@ class Worker(mp.Process):
             if not sig.is_set:
                 continue
 
-            for cb in self.signal_callbacks[type]:
-                cb()
+            for callback in self.signal_callbacks[type]:
+                callback()
 
             sig.clear()
 
-    def _message_to_job(self, msg):
-        if isinstance(msg, ipc.Signal):
-            key = msg
-        else:
-            key = type(msg)
-
+    def _message_to_job(self, message):
+        key = type(message)
         callbacks = self.message_callbacks[key]
+
         if not callbacks:
-            raise exceptions.UnknownMessageError(msg, repr(self))
+            raise exceptions.UnknownMessageError(message, self)
 
-        return _Job(callbacks, msg, self)
+        return _Job(callbacks, message)
 
-    def _workthread_target(self):
-        while self.status != WorkerStatus.TERM:
-            try:
+    def _workthread_mainloop(self):
+        try:
+            while self.status != WorkerStatus.TERM:
                 self._main()
-                self.main()
-            except Exception as exc:
-                self._workthread_error = exc
-                self.status = WorkerStatus.TERM
-                break
+        except Exception as exc:
+            self._workthread_exception = exc
+            self.status = WorkerStatus.TERM
 
 
 class _Job:
-    def __init__(self, callbacks, msg, worker):
+    def __init__(self, callbacks, message):
         self._callbacks = callbacks
-        self._msg = msg
-        self._worker = worker
-
-    @property
-    def args(self):
-        msg = self._msg
-        if isinstance(msg, ipc.Signal):
-            return ()
-        return (msg,)
+        self._args = (message,)
 
     def do(self):
-        args = self.args
         for cb in self._callbacks:
-            cb(*args)
+            cb(*self._args)
