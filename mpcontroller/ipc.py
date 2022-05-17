@@ -113,6 +113,10 @@ class PipeReader:
             if not self.running:
                 return
             raise
+        except BrokenPipeError:
+            if not self.running:
+                return
+            raise
 
     def _mainloop(self):
         try:
@@ -120,6 +124,10 @@ class PipeReader:
                 self._process_messages()
                 time.sleep(self.POLL_INTERVAL)
         except EOFError as exc:
+            if not self.running:
+                return
+            self._exc_cb(exc)
+        except BrokenPipeError as exc:
             if not self.running:
                 return
             self._exc_cb(exc)
