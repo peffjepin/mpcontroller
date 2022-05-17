@@ -246,7 +246,7 @@ class Worker(mp.Process):
                 self._process_messages()
                 self._clear_signals()
                 time.sleep(self.POLL_INTERVAL)
-            
+
             self._workthread.join()
 
             # one final poll for communication

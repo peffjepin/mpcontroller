@@ -200,7 +200,7 @@ def exception_soon(expected_exception):
             deadline = time.time() + FAST_TIMEOUT
             while time.time() < deadline:
                 exc = _MainThreadInterruption.consume_exception()
-                if exc== expected_exception:
+                if exc == expected_exception:
                     return
                 elif exc is not None:
                     print(f"expected: {expected_exception!r}")

@@ -114,6 +114,25 @@ def test_messaging_all_workers_of_a_given_type():
             assert not c.msg_cb.called
 
 
+def test_message_callbacks_are_inherited_if_not_overwritten():
+    controller = EchoChild.spawn()
+    controller.send(example_message)
+
+    @happens_soon
+    def message_is_echoed():
+        controller.msg_cb.assert_called_with(example_message)
+
+
+def test_message_callbacks_can_be_overwritten():
+    controller = EchoChildReimplementedAsEchoTwice.spawn()
+    controller.send(example_message)
+
+    controller.join()
+
+    # should only get the two overwritten calls
+    assert controller.msg_cb.called == 2
+
+
 class Echo(Worker):
     CONTROLLER = RecordedController
 
@@ -129,11 +148,11 @@ class Echo(Worker):
 class EchoTwice(Worker):
     CONTROLLER = RecordedController
 
-    @mpc.message_handler(type(example_message))
+    @mpc.message_handler(ExampleMessage)
     def echomsg1(self, msg):
         self.send(example_message)
 
-    @mpc.message_handler(type(example_message))
+    @mpc.message_handler(ExampleMessage)
     def echomsg2(self, msg):
         self.send(example_message)
 
@@ -143,4 +162,14 @@ class EchoWithIncompatibleController(Worker):
 
     @mpc.message_handler(ExampleMessage)
     def echomsg(self, msg):
+        self.send(msg)
+
+
+class EchoChild(Echo):
+    pass
+
+
+class EchoChildReimplementedAsEchoTwice(Echo):
+    def echomsg(self, msg):
+        self.send(msg)
         self.send(msg)
