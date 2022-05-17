@@ -213,7 +213,7 @@ class Worker(mp.Process):
         )
         self.signal_callbacks = ipc.IpcHandler.get_signal_callback_table(self)
         self.signals = {
-            sig_type: sig_type(mp.Value("i"))
+            sig_type: sig_type(mp.Value("i", ipc.Signal.CLEAR, lock=False))
             for sig_type in self.signal_callbacks
         }
 
@@ -222,7 +222,7 @@ class Worker(mp.Process):
         self._workthread = None
         self._workthread_exception = None
         self._jobqueue = None
-        self.__status = mp.Value("i", WorkerStatus.DEAD.value)
+        self.__status = mp.Value("i", WorkerStatus.DEAD.value, lock=False)
         super().__init__(target=self._mainloop)
 
     def __repr__(self):
@@ -263,7 +263,7 @@ class Worker(mp.Process):
                 self.send(exc)
                 exitcode = 1
 
-        self.status = WorkerStatus.DEAD
+        self.__status.value = WorkerStatus.DEAD.value
         return exitcode
 
     def _main(self):
