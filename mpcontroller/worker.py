@@ -1,4 +1,5 @@
 import time
+import traceback
 import enum
 import threading
 import collections
@@ -245,22 +246,27 @@ class Worker(mp.Process):
                 self._process_messages()
                 self._clear_signals()
                 time.sleep(self.POLL_INTERVAL)
+            
+            self._workthread.join()
 
-            self._workthread.join(timeout=1)
+            # one final poll for communication
+            self._process_messages()
+            self._clear_signals()
+            self._flush_jobqueue()
 
             if self._workthread_exception is not None:
                 self.send(self._workthread_exception)
                 exitcode = 1
 
         except Exception as exc:
-            self.send(exc)
+            self.send(self._wrap_exception(exc))
             exitcode = 1
 
         try:
             self.teardown()
         except Exception as exc:
             if exitcode == 0:
-                self.send(exc)
+                self.send(self._wrap_exception(exc))
                 exitcode = 1
 
         self.__status.value = WorkerStatus.DEAD.value
@@ -301,13 +307,22 @@ class Worker(mp.Process):
 
         return _Job(callbacks, message)
 
+    def _flush_jobqueue(self):
+        for job in self._jobqueue:
+            job.do()
+
     def _workthread_mainloop(self):
         try:
             while self._running:
                 self._main()
         except Exception as exc:
-            self._workthread_exception = exc
+            self._workthread_exception = self._wrap_exception(exc)
             self._running = False
+
+    def _wrap_exception(self, exc):
+        tb = traceback.format_exc()
+        wrapped_exc = exceptions.UnhandledWorkerError(exc, tb)
+        return wrapped_exc
 
     @ipc.signal_handler(ipc.Terminate)
     def _handle_termination_signal(self):

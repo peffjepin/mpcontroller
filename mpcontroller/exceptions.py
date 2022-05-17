@@ -29,3 +29,19 @@ class WorkerExistsError(Exception):
             isinstance(other, WorkerExistsError)
             and self.message == other.message
         )
+
+
+class UnhandledWorkerError(Exception):
+    def __init__(self, exc, tb):
+        self.exc = exc
+        self.tb = tb
+        super().__init__()
+
+    def __reduce__(self):
+        return (UnhandledWorkerError, (self.exc, self.tb))
+
+    def __str__(self):
+        return str(self.tb)
+
+    def __repr__(self):
+        return str(self)

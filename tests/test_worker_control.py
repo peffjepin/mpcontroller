@@ -1,7 +1,12 @@
+import time
+
 from .conftest import happens_soon
 from .conftest import Controller
 from .conftest import Worker
 from .conftest import BlankWorker
+from .conftest import RecordedController
+from .conftest import ExampleMessage
+from .conftest import VERY_FAST_TIMEOUT
 
 import mpcontroller as mpc
 
@@ -87,6 +92,17 @@ def test_joining_all_workers_of_a_given_type():
         assert all(c.pid is not None for c in w2)
 
 
+def test_worker_executes_all_jobs_before_join():
+    controller = SlowEcho.spawn()
+    messages = [ExampleMessage(n) for n in range(3)]
+
+    for msg in messages:
+        controller.send(msg)
+    controller.join()
+
+    assert controller.msg_cb.called == 3
+
+
 class BlankController(Controller):
     pass
 
@@ -101,3 +117,12 @@ class Worker1(Worker):
 
 class Worker2(Worker):
     pass
+
+
+class SlowEcho(Worker):
+    CONTROLLER = RecordedController
+
+    @mpc.message_handler(ExampleMessage)
+    def slowecho(self, msg):
+        time.sleep(VERY_FAST_TIMEOUT)
+        self.send(msg)
