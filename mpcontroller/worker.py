@@ -1,4 +1,5 @@
 import time
+import atexit
 import traceback
 import enum
 import threading
@@ -73,6 +74,9 @@ def kill_all(type=None):
 def join_all(type=None, timeout=None):
     for controller in _central_command[type].copy():
         controller.join(timeout)
+
+
+atexit.register(kill_all)
 
 
 class WorkerStatus(enum.Enum):
