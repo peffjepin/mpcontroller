@@ -61,7 +61,7 @@ class _CentralCommand(collections.defaultdict):
 _central_command = _CentralCommand()
 
 
-def message_all(message, type=None):
+def send_all(message, type=None):
     for controller in _central_command[type].copy():
         controller.send(message)
 

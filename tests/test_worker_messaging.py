@@ -123,7 +123,7 @@ def test_worker_handles_messages_in_the_order_sent():
 
 def test_messaging_all_workers():
     controllers = [Echo.spawn() for i in range(2)]
-    mpc.message_all(example_message)
+    mpc.send_all(example_message)
 
     @happens_soon
     def all_controllers_recieve_resposne():
@@ -134,7 +134,7 @@ def test_messaging_all_workers():
 def test_messaging_all_workers_of_a_given_type():
     echo_once = [Echo.spawn() for i in range(2)]
     echo_twice = [EchoTwice.spawn() for i in range(2)]
-    mpc.message_all(example_message, type=Echo)
+    mpc.send_all(example_message, type=Echo)
 
     @happens_soon
     def only_echo_once_controllers_are_called():

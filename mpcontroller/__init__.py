@@ -2,7 +2,7 @@ from .worker import Worker
 from .worker import Controller
 from .worker import kill_all
 from .worker import join_all
-from .worker import message_all
+from .worker import send_all
 from .worker import WorkerStatus
 from .exceptions import WorkerExistsError
 from .exceptions import UnknownMessageError
