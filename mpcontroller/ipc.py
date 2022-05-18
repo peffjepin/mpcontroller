@@ -2,12 +2,13 @@ import _thread
 import time
 import signal
 import threading
+import multiprocessing as mp
 
 from collections import defaultdict
 
 
 class MainThreadInterruption:
-    # set handler to try and handle exceptions rather than raise them
+    # set handler to try to handle exceptions rather than raise them
     handler = None
     # exception should be set in daemon threads before interrupting main
     exception = None
@@ -46,37 +47,48 @@ signal.signal(signal.SIGINT, MainThreadInterruption._handle_interrupt)
 
 
 class Signal:
-    SET = 1
-    CLEAR = 0
-
-    def __init__(self, shared_int):
+    def __init__(self, callbacks):
         assert type(self) != Signal, "Signal should be subclassed"
-        self._shared = shared_int
-        self._shared.value = Signal.CLEAR
+        self._shared = mp.Value("i", 0)
+        self._shared.value = 0
+        self._callbacks = callbacks
 
-    def set(self, value=None):
-        self._shared.value = value or Signal.SET
+    def activate(self):
+        with self._shared.get_lock():
+            self._shared.value += 1
 
-    def clear(self):
-        self._shared.value = Signal.CLEAR
+    def handle(self):
+        was_set = False
+
+        with self._shared.get_lock():
+            current = self._shared.value
+            if current > 0:
+                was_set = True
+                self._shared.value = current - 1
+
+        if was_set:
+            for callback in self._callbacks:
+                callback()
 
     @property
-    def is_set(self):
-        return self._shared.value != Signal.CLEAR
+    def is_active(self):
+        return self._shared.value != 0
 
 
 class Terminate(Signal):
     pass
 
 
-class PipeReader:
+class CommunicationManager:
     POLL_INTERVAL = 0.05
 
-    def __init__(self, conn, message_handler=None, *, exception_handler=None):
+    def __init__(self, conn, signals, message_handler=None, *, exception_handler=None):
+        self.running = False
+
         self._exc_cb = exception_handler or self._default_exception_handler
         self._msg_cb = message_handler
         self._conn = conn
-        self.running = False
+        self._signals = signals
         self._thread = None
 
     def start(self):
@@ -122,10 +134,15 @@ class PipeReader:
                 return
             raise
 
+    def _handle_signals(self):
+        for sig in self._signals.values():
+            sig.handle()
+
     def _mainloop(self):
         try:
             while self.running:
                 self._process_messages()
+                self._handle_signals()
                 time.sleep(self.POLL_INTERVAL)
         except EOFError as exc:
             if not self.running:
@@ -139,13 +156,19 @@ class PipeReader:
             self._exc_cb(exc)
 
 
-class CallbackMarker:
-    _message_registry = defaultdict(lambda: defaultdict(list))
-    _signal_registry = defaultdict(lambda: defaultdict(list))
+class MethodMarker:
+    key_function = None
 
-    def __init__(self, key, *, _issignal=False):
-        self._issignal = _issignal
-        self._key = key
+    _registry = defaultdict(lambda: defaultdict(list))
+
+    def __init_subclass__(cls):
+        cls._registry = defaultdict(lambda: defaultdict(list))
+
+    def __init__(self, key):
+        if self.key_function:
+            self._key = self.key_function(key)
+        else:
+            self._key = key
 
     def __call__(self, fn):
         self._fn = fn
@@ -156,43 +179,43 @@ class CallbackMarker:
         self._register(name, cls)
 
     def _register(self, name, cls):
-        if self._issignal:
-            registry = self._signal_registry
-        else:
-            registry = self._message_registry
-        registry[cls][self._key].append(name)
+        self._registry[cls][self._key].append(name)
 
     @classmethod
-    def get_message_callback_table(cls, object):
-        return cls._make_callback_table(object, cls._message_registry)
+    def get_registered_keys(cls, type):
+        return cls._registry[type].keys()
 
     @classmethod
-    def get_signal_callback_table(cls, object):
-        return cls._make_callback_table(object, cls._signal_registry)
-
-    @classmethod
-    def _make_callback_table(cls, object, registry):
-        check_classes = type(object).__mro__[:-1]
-        seen = set()
+    def make_callback_table(cls, object):
+        classes_to_check = type(object).__mro__[:-1]
+        callbacks_seen = set()
 
         table = defaultdict(list)
 
-        for cls in check_classes:
-            for key, names in registry[cls].items():
+        for c in classes_to_check:
+            for key, names in cls._registry[c].items():
                 for name in names:
-                    if name in seen:
+                    if name in callbacks_seen:
                         continue
-                    else:
-                        seen.add(name)
+                    callbacks_seen.add(name)
                     bound_method = getattr(object, name)
                     table[key].append(bound_method)
 
         return table
 
 
+class SignalMarker(MethodMarker):
+    @classmethod
+    def make_signals(cls, obj):
+        return {
+            sig_type: sig_type(callbacks)
+            for sig_type, callbacks in cls.make_callback_table(obj).items()
+        }
+
+
 def message_handler(msg_type):
-    return CallbackMarker(msg_type)
+    return MethodMarker(msg_type)
 
 
 def signal_handler(sig_type):
-    return CallbackMarker(sig_type, _issignal=True)
+    return SignalMarker(sig_type)

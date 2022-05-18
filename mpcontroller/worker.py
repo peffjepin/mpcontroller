@@ -16,7 +16,7 @@ def _sequential_ids():
         id += 1
 
 
-class _Registry(collections.defaultdict):
+class _CentralCommand(collections.defaultdict):
     def __init__(self):
         self._idgen = _sequential_ids()
         self._idmap = dict()
@@ -28,7 +28,7 @@ class _Registry(collections.defaultdict):
         return super().__getitem__(key)
 
     def spawn_worker(self, controller):
-        worker = controller.worker_type(controller.id)
+        worker = controller.worker_type(controller)
         worker.status = WorkerStatus.INIT
         worker.start()
         self[type(worker)].append(controller)
@@ -57,21 +57,21 @@ class _Registry(collections.defaultdict):
         self._idgen = _sequential_ids()
 
 
-_registry = _Registry()
+_central_command = _CentralCommand()
 
 
 def message_all(message, type=None):
-    for controller in _registry[type].copy():
+    for controller in _central_command[type].copy():
         controller.send(message)
 
 
 def kill_all(type=None):
-    for controller in _registry[type].copy():
+    for controller in _central_command[type].copy():
         controller.kill()
 
 
 def join_all(type=None, timeout=None):
-    for controller in _registry[type].copy():
+    for controller in _central_command[type].copy():
         controller.join(timeout)
 
 
@@ -89,14 +89,16 @@ class Controller:
         if self._worker:
             raise exceptions.WorkerExistsError(self._worker)
 
-        self._worker = _registry.spawn_worker(self)
-        self._reader = ipc.PipeReader(self._worker.conn, self._recv_message)
+        self._worker = _central_command.spawn_worker(self)
+        self._reader = ipc.CommunicationManager(
+            self._worker.conn, self.signals, self._recv_message
+        )
         self._reader.start()
         return self
 
     def kill(self):
         if self._worker:
-            _registry.kill_worker(self._worker)
+            _central_command.kill_worker(self._worker)
             self._reader.running = False
             self._worker = None
             self._reader.kill()
@@ -104,19 +106,17 @@ class Controller:
 
     def join(self, timeout=None):
         if self._worker:
-            _registry.join_worker(self._worker, timeout)
+            _central_command.join_worker(self._worker, timeout)
             self._reader.running = False
             self._worker = None
             self._reader.join(timeout)
             self._reader = None
 
     def send(self, message_or_signal):
-        if isinstance(message_or_signal, type) and issubclass(
-            message_or_signal, ipc.Signal
-        ):
+        if _message_is_signal(message_or_signal):
             self._send_signal(message_or_signal)
         else:
-            self._send(message_or_signal)
+            self._send_message(message_or_signal)
 
     @property
     def id(self):
@@ -132,9 +132,8 @@ class Controller:
 
     def __init__(self, worker_type, id):
         self.worker_type = worker_type
-        self.message_callbacks = ipc.CallbackMarker.get_message_callback_table(
-            self
-        )
+        self.message_callbacks = ipc.MethodMarker.make_callback_table(self)
+        self.signals = ipc.SignalMarker.make_signals(self)
         self._worker = None
         self._reader = None
         self._id = id
@@ -146,16 +145,14 @@ class Controller:
     def __str__(self):
         return repr(self)
 
-    def _send_signal(self, signal_type):
-        if signal_type not in self._worker.signal_callbacks:
-            raise exceptions.UnknownMessageError(signal_type, self._worker)
-        else:
-            self._worker.signals[signal_type].set()
-
-    def _send(self, message):
+    def _send_message(self, message):
         if type(message) not in self._worker.message_callbacks:
             raise exceptions.UnknownMessageError(message, self._worker)
         self._worker.conn.send(message)
+
+    def _send_signal(self, signal_type):
+        if not _send_signal(signal_type, self._worker.signals):
+            raise exceptions.UnknownMessageError(signal_type, self._worker)
 
     def _recv_message(self, message):
         key = type(message)
@@ -182,7 +179,7 @@ class Worker(mp.Process):
 
     @classmethod
     def controller(cls):
-        return _registry.controller(cls.CONTROLLER, cls)
+        return _central_command.controller(cls.CONTROLLER, cls)
 
     @classmethod
     def spawn(cls):
@@ -201,23 +198,23 @@ class Worker(mp.Process):
     def status(self, new_status: WorkerStatus):
         self.__status.value = new_status.value
 
-    def send(self, message):
-        self._conn.send(message)
+    def send(self, message_or_signal):
+        if _message_is_signal(message_or_signal):
+            if not _send_signal(message_or_signal, self._controller_signals):
+                repr = self._controller_repr
+                exc = exceptions.UnknownMessageError(message_or_signal, repr)
+                raise exc
+        else:
+            self._conn.send(message_or_signal)
 
-    def __init__(self, id):
-        self.message_callbacks = ipc.CallbackMarker.get_message_callback_table(
-            self
-        )
-        self.signal_callbacks = ipc.CallbackMarker.get_signal_callback_table(
-            self
-        )
-        self.signals = {
-            sig_type: sig_type(mp.Value("i", ipc.Signal.CLEAR, lock=False))
-            for sig_type in self.signal_callbacks
-        }
+    def __init__(self, controller):
+        self.message_callbacks = ipc.MethodMarker.make_callback_table(self)
+        self.signals = ipc.SignalMarker.make_signals(self)
 
         self._conn, self.conn = mp.Pipe()
-        self._id = id
+        self._controller_signals = controller.signals
+        self._controller_repr = repr(controller)
+        self._id = controller.id
         self._workthread = None
         self._workthread_exception = None
         self._jobqueue = None
@@ -244,14 +241,14 @@ class Worker(mp.Process):
 
             while self._running:
                 self._process_messages()
-                self._clear_signals()
+                self._handle_signals()
                 time.sleep(self.POLL_INTERVAL)
 
             self._workthread.join()
 
             # one final poll for communication
             self._process_messages()
-            self._clear_signals()
+            self._handle_signals()
             self._flush_jobqueue()
 
             if self._workthread_exception is not None:
@@ -288,15 +285,9 @@ class Worker(mp.Process):
             job = self._message_to_job(message)
             self._jobqueue.append(job)
 
-    def _clear_signals(self):
-        for type, sig in self.signals.items():
-            if not sig.is_set:
-                continue
-
-            for callback in self.signal_callbacks[type]:
-                callback()
-
-            sig.clear()
+    def _handle_signals(self):
+        for sig in self.signals.values():
+            sig.handle()
 
     def _message_to_job(self, message):
         key = type(message)
@@ -337,3 +328,14 @@ class _Job:
     def do(self):
         for cb in self._callbacks:
             cb(*self._args)
+
+
+def _send_signal(type, signals):
+    if type not in signals:
+        return False
+    signals[type].activate()
+    return True
+
+
+def _message_is_signal(message):
+    return isinstance(message, type) and issubclass(message, ipc.Signal)

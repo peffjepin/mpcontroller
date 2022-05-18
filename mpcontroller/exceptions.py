@@ -1,15 +1,21 @@
 class UnknownMessageError(Exception):
-    def __init__(self, message, recipient=None, *, _recipient_repr=None):
+    def __init__(self, message, recipient):
         self._message = message
-        self._recipient = recipient or _recipient_repr
-        self._error = f"{recipient} recieved an unknown message: {message}"
+
+        if isinstance(recipient, str):
+            self._recipient = recipient
+        else:
+            self._recipient = repr(recipient)
+
+        self._error = (
+            f"{self._recipient} recieved an unknown message: {message}"
+        )
         super().__init__(self._error)
 
     def __reduce__(self):
         return (
             UnknownMessageError,
-            (self._message),
-            {"_recipient_repr": self._recipient},
+            (self._message, self._recipient),
         )
 
     def __eq__(self, other):

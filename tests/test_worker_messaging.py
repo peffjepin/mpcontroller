@@ -39,11 +39,21 @@ def test_sending_a_worker_an_unknown_signal():
 def test_sending_a_controller_an_unknown_message():
     controller = EchoWithIncompatibleController.spawn()
 
-    exception = mpc.UnknownMessageError(example_message, repr(controller))
+    exception = mpc.UnknownMessageError(example_message, controller)
 
     @exception_soon(exception)
     def cause():
         controller.send(example_message)
+
+
+def test_sending_a_controller_an_unknown_signal():
+    controller = EchoWithIncompatibleController.spawn()
+
+    exception = mpc.UnknownMessageError(ExampleSignal, controller)
+
+    @exception_soon(exception)
+    def cause():
+        controller.send(ExampleSignal)
 
 
 def test_worker_handles_message_with_registered_callback():
@@ -61,11 +71,31 @@ def test_worker_handles_signal_with_registered_callback():
 
     @happens_soon
     def message_is_sent_back():
-        controller.msg_cb.assert_called_with(example_message)
+        assert controller.msg_cb.called
 
     @doesnt_happen
     def more_messages_arrive():
         assert controller.msg_cb.called > 1
+
+
+def test_controller_handles_signal_sent_by_worker():
+    controller = Echo.spawn()
+    controller.send(ExampleSignal)
+
+    @happens_soon
+    def response_recorded():
+        assert controller.msg_cb.called
+
+
+def test_worker_handles_signal_as_many_times_as_it_is_sent():
+    controller = Echo.spawn()
+
+    controller.send(ExampleSignal)
+    controller.send(ExampleSignal)
+
+    @happens_soon
+    def responses_arive_in_order():
+        controller.msg_cb.called == 2
 
 
 def test_worker_can_register_multiple_callbacks_for_a_single_message():
@@ -142,7 +172,7 @@ class Echo(Worker):
 
     @mpc.signal_handler(ExampleSignal)
     def echosig(self):
-        self.send(example_message)
+        self.send(ExampleSignal)
 
 
 class EchoTwice(Worker):
@@ -163,6 +193,10 @@ class EchoWithIncompatibleController(Worker):
     @mpc.message_handler(ExampleMessage)
     def echomsg(self, msg):
         self.send(msg)
+
+    @mpc.signal_handler(ExampleSignal)
+    def echosig(self):
+        self.send(ExampleSignal)
 
 
 class EchoChild(Echo):

@@ -18,7 +18,7 @@ if os.environ.get("CI", None):
 VERY_FAST_TIMEOUT = FAST_TIMEOUT / 10
 FAST_POLL = FAST_TIMEOUT / 10_000
 
-_pipe_readers = list()
+_communication_managers = list()
 
 
 class _MainThreadInterruption:
@@ -78,11 +78,11 @@ class ExampleSignal(mpc.Signal):
 example_message = ExampleMessage("testing")
 
 
-class PipeReader(ipc.PipeReader):
+class CommunicationManager(ipc.CommunicationManager):
     POLL_INTERVAL = FAST_POLL
 
     def __init__(self, *args, **kwds):
-        _pipe_readers.append(self)
+        _communication_managers.append(self)
         super().__init__(*args, **kwds)
 
 
@@ -110,16 +110,20 @@ class RecordedController(Controller):
     def handler(self, msg):
         self.msg_cb(msg)
 
+    @mpc.signal_handler(ExampleSignal)
+    def sighandler(self):
+        self.msg_cb()
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _patch_test_environment():
     mpc.Controller = Controller
     mpc.Worker = Worker
-    mpc.PipeReader = PipeReader
+    mpc.CommunicationManager = CommunicationManager
 
     worker.Controller = Controller
     worker.Worker = Worker
-    ipc.PipeReader = PipeReader
+    ipc.CommunicationManager = CommunicationManager
     ipc.MainThreadInterruption.handler = _MainThreadInterruption.handler
 
 
@@ -129,14 +133,14 @@ def _per_test_cleanup():
 
     _MainThreadInterruption.clear()
     mpc.kill_all()
-    _kill_pipe_readers()
-    worker._registry.clear()
+    _kill_communication_managers()
+    worker._central_command.clear()
 
 
-def _kill_pipe_readers():
-    while _pipe_readers:
+def _kill_communication_managers():
+    while _communication_managers:
         try:
-            _pipe_readers.pop().kill()
+            _communication_managers.pop().kill()
         except Exception:
             pass
 
