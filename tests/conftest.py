@@ -15,7 +15,7 @@ FAST_TIMEOUT = 0.5
 if os.environ.get("CI", None):
     FAST_TIMEOUT = 30
 
-VERY_FAST_TIMEOUT = FAST_TIMEOUT / 10
+VERY_FAST_TIMEOUT = FAST_TIMEOUT / 100
 FAST_POLL = FAST_TIMEOUT / 10_000
 
 _communication_managers = list()

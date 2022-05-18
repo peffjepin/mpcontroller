@@ -5,7 +5,7 @@ from .conftest import BlankWorker
 from .conftest import happens_soon
 from .conftest import doesnt_happen
 from .conftest import example_message
-from .conftest import FAST_TIMEOUT
+from .conftest import VERY_FAST_TIMEOUT
 
 import mpcontroller as mpc
 
@@ -50,10 +50,10 @@ def test_dead_after_kill():
 
 class MainloopImplementationWorker(Worker):
     def main(self):
-        time.sleep(FAST_TIMEOUT)
+        time.sleep(VERY_FAST_TIMEOUT)
 
 
 class BusyMessageWorker(Worker):
     @mpc.message_handler(type(example_message))
     def busy_handler(self, _):
-        time.sleep(FAST_TIMEOUT)
+        time.sleep(VERY_FAST_TIMEOUT)
