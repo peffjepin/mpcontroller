@@ -1,28 +1,52 @@
-class UnknownMessageError(Exception):
-    def __init__(self, message, recipient):
-        self._message = message
+import traceback
 
-        if isinstance(recipient, str):
-            self._recipient = recipient
-        else:
-            self._recipient = repr(recipient)
+_TB_NONE = traceback.format_exc()
 
-        self._error = (
-            f"{self._recipient} recieved an unknown message: {message}"
-        )
-        super().__init__(self._error)
+
+class PicklableException(Exception):
+    def __new__(cls, *args, **kwargs):
+        obj = super().__new__(cls, *args, **kwargs)
+        obj._pickleargs = args
+        obj._picklekwargs = kwargs
+        return obj
+
+    def __init__(self, *args, **kwargs):
+        return super().__init__(*args, **kwargs)
 
     def __reduce__(self):
-        return (
-            UnknownMessageError,
-            (self._message, self._recipient),
-        )
+        return (self._inflate, (self._pickleargs, self._picklekwargs))
 
     def __eq__(self, other):
         return (
-            isinstance(other, UnknownMessageError)
-            and self._error == other._error
+            isinstance(other, PicklableException)
+            and self._pickleargs == other._pickleargs
+            and self._picklekwargs == other._picklekwargs
         )
+
+    def __repr__(self):
+        fmtargs = ", ".join(map(str, self._pickleargs))
+        fmtkwargs = ", ".join(
+            f"{k}={v}" for k, v in self._picklekwargs.items()
+        )
+        sig = fmtargs
+        if fmtkwargs:
+            if sig:
+                sig += f", {fmtkwargs}"
+            else:
+                sig = fmtkwargs
+        return f"{self.__class__.__name__}({sig})"
+
+    @classmethod
+    def _inflate(cls, args, kwargs):
+        return cls(*args, **kwargs)
+
+
+class UnknownMessageError(PicklableException):
+    def __init__(self, message, recipient):
+        self._message = message
+        self._recipient = recipient
+        self._error = f"{recipient} recieved an unknown message: {message}"
+        super().__init__(self._error)
 
 
 class WorkerExistsError(Exception):
@@ -37,17 +61,18 @@ class WorkerExistsError(Exception):
         )
 
 
-class UnhandledWorkerError(Exception):
-    def __init__(self, exc, tb):
+class WorkerRuntimeError(PicklableException):
+    def __init__(self, exc, tb=None):
         self.exc = exc
-        self.tb = tb
+        self.tb = "" if tb == _TB_NONE else tb
+
         super().__init__()
 
-    def __reduce__(self):
-        return (UnhandledWorkerError, (self.exc, self.tb))
-
     def __str__(self):
-        return str(self.tb)
+        return str(self.tb) if self.tb else repr(self.exc)
 
     def __repr__(self):
-        return str(self)
+        return "WorkerRuntimeError: " + str(self)
+
+    def __eq__(self, other):
+        return str(self) == str(other)

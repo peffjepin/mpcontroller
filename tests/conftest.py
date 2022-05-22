@@ -20,6 +20,15 @@ FAST_POLL = FAST_TIMEOUT / 10_000
 
 _communication_managers = list()
 
+mpc.config.poll_interval = FAST_POLL
+
+
+Worker = mpc.Worker
+
+
+class ExampleTask(typing.NamedTuple):
+    value: typing.Any = "testing"
+
 
 class _MainThreadInterruption:
     _exception = None
@@ -42,8 +51,6 @@ class _MainThreadInterruption:
         else:
             exc = cls._exception
             cls._exception = None
-            if isinstance(exc, mpc.UnhandledWorkerError):
-                return exc.exc
             return exc
 
     @classmethod
@@ -79,24 +86,16 @@ example_message = ExampleMessage("testing")
 
 
 class CommunicationManager(ipc.CommunicationManager):
-    POLL_INTERVAL = FAST_POLL
-
     def __init__(self, *args, **kwds):
         _communication_managers.append(self)
         super().__init__(*args, **kwds)
 
 
-class Worker(mpc.Worker):
-    POLL_INTERVAL = FAST_POLL
-
-
-class BlankWorker(Worker):
+class BlankWorker(mpc.Worker):
     pass
 
 
 class Controller(mpc.Controller):
-    POLL_INTERVAL = FAST_POLL
-
     def join(self, timeout=None):
         super().join(timeout or FAST_TIMEOUT)
 
@@ -204,6 +203,9 @@ def exception_soon(expected_exception):
             deadline = time.time() + FAST_TIMEOUT
             while time.time() < deadline:
                 exc = _MainThreadInterruption.consume_exception()
+                if exc:
+                    # some debug output in case of failure
+                    print("caught an exception: ", repr(exc))
                 if exc == expected_exception:
                     return
                 elif exc is not None:
@@ -212,6 +214,22 @@ def exception_soon(expected_exception):
             raise AssertionError(f"never caught {expected_exception!r}")
         finally:
             _MainThreadInterruption.clear()
+
+    return inner
+
+
+def exception_soon_repeat(exc):
+    def inner(fn):
+        # like exception soon but this exception will be raised directly
+        # in the main process soon as a result of calling this function
+        deadline = time.time() + FAST_TIMEOUT
+        while time.time() < deadline:
+            try:
+                fn()
+            except Exception as actual:
+                assert exc == actual
+                return
+        raise AssertionError(f"never caught {exc!r}")
 
     return inner
 
