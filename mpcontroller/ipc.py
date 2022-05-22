@@ -2,14 +2,12 @@ import _thread
 import time
 import signal
 import traceback
-import threading
 import collections
 import multiprocessing as mp
 
-from collections import defaultdict
-
 from . import exceptions
 from . import global_state
+from . import util
 
 
 class MainThreadInterruption:
@@ -285,28 +283,7 @@ class CommunicationManager:
         )
 
 
-class MainloopThread(threading.Thread):
-    def __init__(self, *args, **kwargs):
-        self._running = False
-        super().__init__(*args, target=self._main, daemon=True, **kwargs)
-
-    def _main(self):
-        self._running = True
-        while self._running:
-            self.mainloop()
-
-    def join(self, timeout=None):
-        self._running = False
-        super().join(timeout)
-
-    def kill(self):
-        self._running = False
-
-    def mainloop(self):
-        raise NotImplementedError()
-
-
-class SignalProcessingThread(MainloopThread):
+class SignalProcessingThread(util.MainloopThread):
     def __init__(self, signals_to_watch, on_exception):
         self._signals = signals_to_watch
         self._on_exception = on_exception
@@ -317,7 +294,7 @@ class SignalProcessingThread(MainloopThread):
         time.sleep(global_state.config.poll_interval)
 
 
-class ConnectionPollingThread(MainloopThread):
+class ConnectionPollingThread(util.MainloopThread):
     def __init__(self, conn, on_message, on_exception):
         self._conn = conn
         self._on_message = on_message
@@ -348,66 +325,6 @@ class ConnectionPollingThread(MainloopThread):
             self._process_messages()
         except Exception:
             pass
-
-
-class MethodMarker:
-    _registry = defaultdict(lambda: defaultdict(list))
-
-    def __init_subclass__(cls):
-        cls._registry = defaultdict(lambda: defaultdict(list))
-
-    def __init__(self, key):
-        self._key = key
-
-    def __call__(self, fn):
-        self._fn = fn
-        return self
-
-    def __set_name__(self, cls, name):
-        setattr(cls, name, self._fn)
-        self._register(name, cls)
-
-    def _register(self, name, cls):
-        self._registry[cls][self._key].append(name)
-
-    @classmethod
-    def get_registered_keys(cls, type):
-        return cls._registry[type].keys()
-
-    @classmethod
-    def make_callback_table(cls, object):
-        classes_to_check = type(object).__mro__[:-1]
-        callbacks_seen = set()
-
-        table = defaultdict(list)
-
-        for c in classes_to_check:
-            for key, names in cls._registry[c].items():
-                for name in names:
-                    if name in callbacks_seen:
-                        continue
-                    callbacks_seen.add(name)
-                    bound_method = getattr(object, name)
-                    table[key].append(bound_method)
-
-        return table
-
-
-class SignalMarker(MethodMarker):
-    @classmethod
-    def make_signals(cls, obj):
-        return {
-            sig_type: sig_type(callbacks)
-            for sig_type, callbacks in cls.make_callback_table(obj).items()
-        }
-
-
-def message_handler(msg_type):
-    return MethodMarker(msg_type)
-
-
-def signal_handler(sig_type):
-    return SignalMarker(sig_type)
 
 
 def _is_signal(msg):

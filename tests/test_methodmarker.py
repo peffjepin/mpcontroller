@@ -1,7 +1,4 @@
-from mpcontroller import ipc
-
-
-MethodMarker = ipc.MethodMarker
+from mpcontroller.util import MethodMarker
 
 
 class ExampleMarked:
@@ -96,3 +93,29 @@ def test_multiple_marks():
     assert obj.m1 == 1
     assert obj.m2 == 1
     assert obj.m3 == 1
+
+
+def test_subclass_maintains_its_own_marks():
+    class MarkerSubclass(MethodMarker):
+        pass
+
+    class Marked:
+        v1, v2 = 0, 0
+
+        @MarkerSubclass("test")
+        def test1(self):
+            self.v1 += 1
+
+        @MethodMarker("test")
+        def test2(self):
+            self.v2 += 1
+
+    obj = Marked()
+
+    for method in MethodMarker.make_callback_table(obj)["test"]:
+        method()
+    for method in MarkerSubclass.make_callback_table(obj)["test"]:
+        method()
+
+    assert obj.v1 == 1
+    assert obj.v2 == 1
