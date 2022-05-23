@@ -84,6 +84,16 @@ class Terminate(Signal):
     pass
 
 
+class TaskHandler:
+    def __init__(self, task, callbacks):
+        self._task = task
+        self._callbacks = callbacks
+
+    def __call__(self):
+        for cb in self._callbacks:
+            cb(self._task)
+
+
 class CommunicationManager:
     def __init__(
         self,
@@ -96,15 +106,16 @@ class CommunicationManager:
         self._main_tasks = main_tasks or dict()
         self._worker_signals = self._init_signals(worker_signals or dict())
         self._main_signals = self._init_signals(main_signals or dict())
-        self._auto = False
+        self._auto = True
         self._in_child_process = False
         self._main_conn, self._worker_conn = mp.Pipe()
         self._pipe_thread = None
         self._signal_thread = None
 
-    def start(self, *, auto=False):
-        self._auto = auto
+    def start(self, *, auto=True):
         self.taskq = collections.deque()
+
+        self._auto = auto
         self._in_child_process = mp.current_process().name != "MainProcess"
 
         if self._in_child_process:
@@ -118,7 +129,7 @@ class CommunicationManager:
             self._signal_thread.join(timeout)
 
     def kill(self):
-        if self._auto:
+        if self._auto and self._pipe_thread:
             self._pipe_thread.kill()
             self._signal_thread.kill()
 
@@ -133,6 +144,7 @@ class CommunicationManager:
                 self._local_conn,
                 self._on_task_recieved,
                 self._on_exception_recieved,
+                self._on_runtime_exception,
             )
 
     def send(self, msg):
@@ -144,6 +156,22 @@ class CommunicationManager:
             self._local_conn.send(msg)
         else:
             self._send_task(msg)
+
+    def flush_inbound_communication(self):
+        def on_runtime_exception(exc):
+            if isinstance(exc, EOFError):
+                return
+            if isinstance(exc, BrokenPipeError):
+                return
+            self._on_runtime_exception(exc)
+
+        _process_signals(self._local_signals.values(), on_runtime_exception)
+        _process_messages(
+            self._local_conn,
+            self._on_task_recieved,
+            self._on_exception_recieved,
+            on_runtime_exception,
+        )
 
     def _init_signals(self, callback_lookup):
         initialized = {
@@ -159,10 +187,7 @@ class CommunicationManager:
             self._handle_unknown_message(task)
 
     def _handle_unknown_message(self, msg):
-        recipient = (
-            "MainProcess" if self._in_child_process else "WorkerProcess"
-        )
-        exception = exceptions.UnknownMessageError(msg, recipient)
+        exception = exceptions.UnknownMessageError(msg)
 
         if self._in_child_process:
             self.send(exception)
@@ -199,13 +224,13 @@ class CommunicationManager:
 
     @property
     def _on_task_recieved(self):
-        # TODO: Multiple handlers
         def main_implementation(task):
             handlers = self._local_tasks[type(task)]
             _complete_task(task, handlers, self._on_runtime_exception)
 
         def worker_implementation(task):
-            self.taskq.append(task)
+            handlers = self._local_tasks[type(task)]
+            self.taskq.append(TaskHandler(task, handlers))
 
         return (
             worker_implementation
@@ -233,9 +258,12 @@ class CommunicationManager:
     @property
     def _on_runtime_exception(self):
         def main_implementation(exc):
-            exception = exceptions.WorkerRuntimeError(
-                exc, traceback.format_exc()
-            )
+            if isinstance(exc, exceptions.WorkerRuntimeError) or isinstance(
+                exc, exceptions.UnknownMessageError
+            ):
+                exception = exc
+            else:
+                exception = exceptions.WorkerRuntimeError(exc)
             if self._auto:
                 MainThreadInterruption.interrupt_main(exception)
             else:
@@ -295,34 +323,37 @@ class SignalProcessingThread(util.MainloopThread):
 
 
 class ConnectionPollingThread(util.MainloopThread):
-    def __init__(self, conn, on_message, on_exception):
+    def __init__(self, conn, on_task, on_exception):
         self._conn = conn
-        self._on_message = on_message
+        self._on_task = on_task
         self._on_exception = on_exception
         super().__init__()
 
     def mainloop(self):
         try:
-            self._process_messages()
+            _process_messages(
+                self._conn,
+                self._on_task,
+                self._on_exception,
+                self._on_runtime_exception,
+            )
             time.sleep(global_state.config.poll_interval)
         except Exception as exc:
             MainThreadInterruption.interrupt_main(exc)
         finally:
             self._safe_flush_pipe()
 
-    def _process_messages(self):
-        try:
-            _process_messages(self._conn, self._on_message, self._on_exception)
-        except EOFError:
-            if self._running:
-                raise
-        except BrokenPipeError:
-            if self._running:
-                raise
+    def _on_runtime_exception(self, exc):
+        if not self._running:
+            if isinstance(exc, EOFError):
+                return
+            if isinstance(exc, BrokenPipeError):
+                return
+        raise exc
 
     def _safe_flush_pipe(self):
         try:
-            self._process_messages()
+            _process_messages(self._conn, self._on_task, self._on_exception)
         except Exception:
             pass
 
@@ -334,26 +365,35 @@ def _is_signal(msg):
         return False
 
 
-def _process_messages(conn, on_task, on_exception):
-    while conn.poll(0):
-        msg = conn.recv()
-        if isinstance(msg, Exception):
-            on_exception(msg)
-        else:
-            on_task(msg)
+def _raise(exc):
+    raise exc
 
 
-def _process_signals(signals, on_exception):
+def _process_messages(
+    conn, on_task, on_exception_recieved=_raise, on_runtime_exception=_raise
+):
+    try:
+        while conn.poll(0):
+            msg = conn.recv()
+            if isinstance(msg, Exception):
+                on_exception_recieved(msg)
+            else:
+                on_task(msg)
+    except Exception as exc:
+        on_runtime_exception(exc)
+
+
+def _process_signals(signals, on_runtime_exception=_raise):
     try:
         for sig in signals:
             sig.handle()
     except Exception as exc:
-        on_exception(exc)
+        on_runtime_exception(exc)
 
 
-def _complete_task(task, handlers, on_exception):
+def _complete_task(task, handlers, on_runtime_exception=_raise):
     try:
         for handler in handlers:
             handler(task)
     except Exception as exc:
-        on_exception(exc)
+        on_runtime_exception(exc)

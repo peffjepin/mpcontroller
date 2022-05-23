@@ -13,32 +13,54 @@ from .conftest import (
 
 import mpcontroller as mpc
 
+from mpcontroller import ipc
+from mpcontroller import global_state
 
+
+MAIN_CONTEXT = "testing-main"
+WORKER_CONTEXT = "testing-worker"
+
+global_state.config.context = MAIN_CONTEXT
 traceback.format_exc = lambda: ""
-_processes = []
+
+
+def unknown_sent_from_worker(msg):
+    global_state.config.context = WORKER_CONTEXT
+    exc = mpc.UnknownMessageError(msg)
+    global_state.config.context = MAIN_CONTEXT
+    return exc
+
+
+def unknown_sent_from_main(msg):
+    exc = mpc.UnknownMessageError(msg)
+    return exc
 
 
 @pytest.fixture(autouse=True, scope="function")
 def _kill_remaining_processes():
     yield
-    while _processes:
+    while IPCTestCase.processes:
         try:
-            _processes.pop().kill()
+            IPCTestCase.processes.pop().kill()
         except Exception:
             pass
 
 
 class IPCTestCase(mp.Process):
+    processes = []
+
     def __init__(self, manager=None):
-        self.manager = manager or mpc.CommunicationManager()
+        self.manager = manager or ipc.CommunicationManager()
         self._success = mp.Value("i", 0)
         self._shared_trigger = mp.Value("i", 0)
         self.exception = None
-        _processes.append(self)
+        self.processes.append(self)
         super().__init__(target=self.main)
 
     def main(self):
         traceback.format_exc = lambda: ""
+        global_state.config.context = WORKER_CONTEXT
+
         self.manager.start(auto=True)
         while True:
             try:
@@ -91,7 +113,7 @@ class LeadsToSuccessFlag(IPCTestCase):
 
 class UnknownTaskSentToWorker(ErrorImmediately):
     task = ExampleTask()
-    expected = mpc.UnknownMessageError(task, "WorkerProcess")
+    expected = unknown_sent_from_main(task)
 
     def local_trigger(self):
         self.manager.send(self.task)
@@ -99,21 +121,21 @@ class UnknownTaskSentToWorker(ErrorImmediately):
 
 class UnknownTaskSentToMain(LeadsToError):
     task = ExampleTask()
-    expected = mpc.UnknownMessageError(task, "MainProcess")
+    expected = unknown_sent_from_worker(task)
 
     def process_trigger(self):
         self.manager.send(self.task)
 
 
 class UnknownSignalSentToWorker(ErrorImmediately):
-    expected = mpc.UnknownMessageError(ExampleSignal, "WorkerProcess")
+    expected = unknown_sent_from_main(ExampleSignal)
 
     def local_trigger(self):
         self.manager.send(ExampleSignal)
 
 
 class UnknownSignalSentToMain(LeadsToError):
-    expected = mpc.UnknownMessageError(ExampleSignal, "MainProcess")
+    expected = unknown_sent_from_worker(ExampleSignal)
 
     def process_trigger(self):
         self.manager.send(ExampleSignal)
@@ -126,14 +148,18 @@ class KnownTaskSentToWorker(LeadsToSuccessFlag):
         self.manager.send(self.task)
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
-            worker_tasks={ExampleTask: [self.blank]},
+        manager = ipc.CommunicationManager(
+            worker_tasks={ExampleTask: [self.succeed]},
         )
         super().__init__(manager)
 
+    def succeed(self, task):
+        self.success = True
+
     def check_process_state(self):
-        if self.task in self.manager.taskq:
-            self.success = True
+        if self.manager.taskq:
+            handler = self.manager.taskq.popleft()
+            handler()
 
 
 class KnownSignalSentToWorker(LeadsToSuccessFlag):
@@ -141,7 +167,7 @@ class KnownSignalSentToWorker(LeadsToSuccessFlag):
         self.manager.send(ExampleSignal)
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
+        manager = ipc.CommunicationManager(
             worker_signals={ExampleSignal: [self.handle_signal]},
         )
         super().__init__(manager)
@@ -157,7 +183,7 @@ class KnownTaskSentToMain(LeadsToSuccessFlag):
         self.manager.send(self.task)
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
+        manager = ipc.CommunicationManager(
             main_tasks={ExampleTask: [self.handle_task]},
         )
         super().__init__(manager)
@@ -171,7 +197,7 @@ class KnownSignalSentToMain(LeadsToSuccessFlag):
         self.manager.send(ExampleSignal)
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
+        manager = ipc.CommunicationManager(
             main_signals={ExampleSignal: [self.handle_sig]},
         )
         super().__init__(manager)
@@ -188,7 +214,7 @@ class ExceptionInWorkerSignalHandler(LeadsToError):
         self.manager.send(ExampleSignal)
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
+        manager = ipc.CommunicationManager(
             worker_signals={ExampleSignal: [self.raises_error]},
         )
         manager._signal_thread = None
@@ -206,7 +232,7 @@ class ExceptionInMainTaskHandler(LeadsToError):
         self.manager.send(ExampleTask())
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
+        manager = ipc.CommunicationManager(
             main_tasks={ExampleTask: [self.raises_error]},
         )
         super().__init__(manager)
@@ -223,7 +249,7 @@ class ExceptionInMainSignalHandler(LeadsToError):
         self.manager.send(ExampleSignal)
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
+        manager = ipc.CommunicationManager(
             main_signals={ExampleSignal: [self.raises_error]},
         )
         super().__init__(manager)
@@ -242,13 +268,19 @@ class TasksHandledInOrder(LeadsToSuccessFlag):
         self.manager.send(self.expected[2])
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
-            worker_tasks={ExampleTask: [self.blank]},
+        manager = ipc.CommunicationManager(
+            worker_tasks={ExampleTask: [self.handle]},
         )
         super().__init__(manager)
 
+    def handle(self, task):
+        self.seen.append(task)
+
     def check_process_state(self):
-        if list(self.manager.taskq) == self.expected:
+        while self.manager.taskq:
+            handler = self.manager.taskq.popleft()
+            handler()
+        if self.seen == self.expected:
             self.success = True
 
 
@@ -257,7 +289,7 @@ class SignalWithMultipleHandlers(LeadsToSuccessFlag):
         self.manager.send(ExampleSignal)
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
+        manager = ipc.CommunicationManager(
             worker_signals={ExampleSignal: [self.handler1, self.handler2]}
         )
         self.n = 0
@@ -279,7 +311,7 @@ class TaskWithMultipleHandlers(LeadsToSuccessFlag):
         self.manager.send(ExampleTask())
 
     def __init__(self):
-        manager = mpc.CommunicationManager(
+        manager = ipc.CommunicationManager(
             main_tasks={ExampleTask: [self.handler1, self.handler2]}
         )
         self.n = 0

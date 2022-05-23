@@ -3,7 +3,7 @@ import traceback
 
 import pytest
 
-from .conftest import example_message
+from .conftest import example_task
 
 import mpcontroller as mpc
 
@@ -24,7 +24,7 @@ class ExampleException(mpc.Exception):
 @pytest.mark.parametrize(
     "object_under_test",
     (
-        mpc.UnknownMessageError(example_message, "worker"),
+        mpc.UnknownMessageError(example_task),
         mpc.WorkerRuntimeError(*example_exception_and_traceback()),
         ExampleException(1, 2),
         ExampleException(kwarg1=1, kwarg2=2),

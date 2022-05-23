@@ -1,5 +1,7 @@
 import traceback
 
+from . import global_state
+
 _TB_NONE = traceback.format_exc()
 
 
@@ -17,24 +19,7 @@ class PicklableException(Exception):
         return (self._inflate, (self._pickleargs, self._picklekwargs))
 
     def __eq__(self, other):
-        return (
-            isinstance(other, PicklableException)
-            and self._pickleargs == other._pickleargs
-            and self._picklekwargs == other._picklekwargs
-        )
-
-    def __repr__(self):
-        fmtargs = ", ".join(map(str, self._pickleargs))
-        fmtkwargs = ", ".join(
-            f"{k}={v}" for k, v in self._picklekwargs.items()
-        )
-        sig = fmtargs
-        if fmtkwargs:
-            if sig:
-                sig += f", {fmtkwargs}"
-            else:
-                sig = fmtkwargs
-        return f"{self.__class__.__name__}({sig})"
+        return isinstance(other, type(self)) and str(self) == str(other)
 
     @classmethod
     def _inflate(cls, args, kwargs):
@@ -42,37 +27,39 @@ class PicklableException(Exception):
 
 
 class UnknownMessageError(PicklableException):
-    def __init__(self, message, recipient):
+    def __init__(self, message, error=None):
+        if error:
+            self._error = error
+        else:
+            self._error = (
+                f"{global_state.config.context} sent an unknown communication:"
+                f"\n{message}"
+            )
         self._message = message
-        self._recipient = recipient
-        self._error = f"{recipient} recieved an unknown message: {message}"
         super().__init__(self._error)
 
-
-class WorkerExistsError(Exception):
-    def __init__(self, worker):
-        self.message = f"{worker} already exists"
-        super().__init__(self.message)
-
-    def __eq__(self, other):
-        return (
-            isinstance(other, WorkerExistsError)
-            and self.message == other.message
-        )
+    def __reduce__(self):
+        # important to reduce with _error included, otherwise
+        # global_state.config.context will end up being re-evaluated
+        # in the recieving process, causing an incorrect error message
+        return (UnknownMessageError, (self._message, self._error))
 
 
 class WorkerRuntimeError(PicklableException):
     def __init__(self, exc, tb=None):
-        self.exc = exc
-        self.tb = "" if tb == _TB_NONE else tb
+        if tb is None:
+            tb = traceback.format_exc()
+            tb = tb if tb != _TB_NONE else ""
 
+        self.exc = exc
+        self.tb = tb
         super().__init__()
 
     def __str__(self):
-        return str(self.tb) if self.tb else repr(self.exc)
+        return str(self.tb) if self.tb else str(self.exc)
 
     def __repr__(self):
-        return "WorkerRuntimeError: " + str(self)
+        return "WorkerRuntimeError:\n" + str(self)
 
     def __eq__(self, other):
         return str(self) == str(other)

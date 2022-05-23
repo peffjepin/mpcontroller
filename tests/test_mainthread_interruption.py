@@ -1,10 +1,19 @@
 import threading
 
+import pytest
+
 from .conftest import example_exception
 from .conftest import exception_soon
 from .conftest import happens_soon
 
 from mpcontroller import ipc
+
+
+@pytest.fixture(autouse=True, scope="module")
+def cleanup():
+    impl = ipc.MainThreadInterruption.handler
+    yield
+    ipc.MainThreadInterruption.handler = impl
 
 
 def raises_example_exception():

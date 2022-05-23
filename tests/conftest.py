@@ -17,17 +17,7 @@ if os.environ.get("CI", None):
 
 VERY_FAST_TIMEOUT = FAST_TIMEOUT / 100
 FAST_POLL = FAST_TIMEOUT / 10_000
-
-_communication_managers = list()
-
 mpc.config.poll_interval = FAST_POLL
-
-
-Worker = mpc.Worker
-
-
-class ExampleTask(typing.NamedTuple):
-    value: typing.Any = "testing"
 
 
 class _MainThreadInterruption:
@@ -38,9 +28,7 @@ class _MainThreadInterruption:
     def handler(cls, exc):
         # if we're not expecting a mainthread interrupt raise the exception
         if not cls.expecting:
-            raise _UnexpectedInterruption(
-                f"main thread interrupted unexpectedly:\n {exc!r}"
-            )
+            raise exc
         # else just set it as the exception value for use elsewhere
         cls.set_exception(exc)
 
@@ -58,7 +46,7 @@ class _MainThreadInterruption:
         if cls._exception is None:
             cls._exception = exc
         else:
-            raise _UnexpectedInterruption(
+            raise Exception(
                 "main thread was interrupted again before a previous"
                 f"interruption could be handled...\nprev: {cls._exception!r}"
                 f"\nnew: {exc!r}"
@@ -70,58 +58,43 @@ class _MainThreadInterruption:
         cls.expecting = None
 
 
-class _UnexpectedInterruption(Exception):
-    pass
-
-
-class ExampleMessage(typing.NamedTuple):
-    content: str
+class ExampleTask(typing.NamedTuple):
+    content: typing.Any = "testing"
 
 
 class ExampleSignal(mpc.Signal):
     pass
 
 
-example_message = ExampleMessage("testing")
+example_task = ExampleTask("testing")
 
 
 class CommunicationManager(ipc.CommunicationManager):
+    _created = []
+
     def __init__(self, *args, **kwds):
-        _communication_managers.append(self)
+        CommunicationManager._created.append(self)
         super().__init__(*args, **kwds)
 
+    @classmethod
+    def cleanup(cls):
+        for cm in cls._created:
+            cm.kill()
+        cls._created.clear()
 
-class BlankWorker(mpc.Worker):
-    pass
 
-
-class Controller(mpc.Controller):
+class Worker(mpc.Worker):
     def join(self, timeout=None):
         super().join(timeout or FAST_TIMEOUT)
 
 
-class RecordedController(Controller):
-    def __init__(self, *args, **kwargs):
-        self.msg_cb = RecordedCallback()
-        super().__init__(*args, **kwargs)
-
-    @mpc.message_handler(ExampleMessage)
-    def handler(self, msg):
-        self.msg_cb(msg)
-
-    @mpc.signal_handler(ExampleSignal)
-    def sighandler(self):
-        self.msg_cb()
+class BlankWorker(Worker):
+    pass
 
 
 @pytest.fixture(autouse=True, scope="session")
 def _patch_test_environment():
-    mpc.Controller = Controller
     mpc.Worker = Worker
-    mpc.CommunicationManager = CommunicationManager
-
-    worker.Controller = Controller
-    worker.Worker = Worker
     ipc.CommunicationManager = CommunicationManager
     ipc.MainThreadInterruption.handler = _MainThreadInterruption.handler
 
@@ -131,17 +104,8 @@ def _per_test_cleanup():
     yield
 
     _MainThreadInterruption.clear()
+    CommunicationManager.cleanup()
     mpc.kill_all()
-    _kill_communication_managers()
-    worker._central_command.clear()
-
-
-def _kill_communication_managers():
-    while _communication_managers:
-        try:
-            _communication_managers.pop().kill()
-        except Exception:
-            pass
 
 
 def _succeeds_before_timeout(fn, timeout):
@@ -150,9 +114,9 @@ def _succeeds_before_timeout(fn, timeout):
     while True:
         try:
             fn()
+        except mpc.WorkerRuntimeError as exc:
+            raise exc
         except Exception as exc:
-            if isinstance(exc, _UnexpectedInterruption):
-                raise exc
             if time.time() < deadline:
                 continue
             else:
@@ -167,13 +131,13 @@ def _doesnt_succeed_before_timeout(fn, timeout):
     while True:
         try:
             fn()
-        except Exception as exc:
-            if isinstance(exc, _UnexpectedInterruption):
-                raise exc
+        except mpc.WorkerRuntimeError as exc:
+            raise exc
+        except Exception:
             if time.time() < deadline:
                 continue
             else:
-                break
+                return
         else:
             raise AssertionError(f"{fn!r} succeeded")
 
@@ -201,6 +165,7 @@ def exception_soon(expected_exception):
             _MainThreadInterruption.expecting = True
             fn()
             deadline = time.time() + FAST_TIMEOUT
+
             while time.time() < deadline:
                 exc = _MainThreadInterruption.consume_exception()
                 if exc:
@@ -269,16 +234,4 @@ def recorded_callback():
     return RecordedCallback()
 
 
-class EqualityException(Exception):
-    def __init__(self, msg):
-        self.msg = msg
-        super().__init__(msg)
-
-    def __eq__(self, other):
-        return isinstance(other, EqualityException) and self.msg == other.msg
-
-    def __reduce__(self):
-        return (EqualityException, (self.msg,))
-
-
-example_exception = EqualityException("testing")
+example_exception = mpc.Exception("testing")
