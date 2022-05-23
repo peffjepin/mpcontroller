@@ -1,13 +1,12 @@
 import time
-import atexit
-import traceback
 import enum
-import threading
 import collections
 import multiprocessing as mp
 
 from . import ipc
+from . import util
 from . import exceptions
+from . import global_state
 
 
 def _sequential_ids():
@@ -17,66 +16,60 @@ def _sequential_ids():
         id += 1
 
 
-class _CentralCommand(collections.defaultdict):
-    def __init__(self):
-        self._idgen = _sequential_ids()
-        self._idmap = dict()
-        super().__init__(list)
-
-    def __getitem__(self, key):
-        if key is None:
-            return sum(self.values(), [])
-        return super().__getitem__(key)
-
-    def spawn_worker(self, controller):
-        worker = controller.worker_type(controller)
-        worker.status = WorkerStatus.INIT
-        worker.start()
-        self[type(worker)].append(controller)
-        return worker
-
-    def kill_worker(self, worker):
-        controller = self._idmap[worker.id]
-        worker.kill()
-        self[type(worker)].remove(controller)
-
-    def join_worker(self, worker, timeout):
-        controller = self._idmap[worker.id]
-        controller.send(ipc.Terminate)
-        worker.join(timeout)
-        self[type(worker)].remove(controller)
-
-    def controller(self, controller_type, worker_type):
-        id = next(self._idgen)
-        controller = controller_type(worker_type, id)
-        self._idmap[id] = controller
-        return controller
-
-    def clear(self):
-        super().clear()
-        self._idmap.clear()
-        self._idgen = _sequential_ids()
+class WorkerTaskMarker(util.MethodMarker):
+    pass
 
 
-_central_command = _CentralCommand()
+class WorkerSignalMarker(util.MethodMarker):
+    pass
 
 
-def send_all(message, type=None):
-    for controller in _central_command[type].copy():
-        controller.send(message)
+class MainTaskMarker(util.MethodMarker):
+    pass
 
 
-def kill_all(type=None):
-    for controller in _central_command[type].copy():
-        controller.kill()
+class MainSignalMarker(util.MethodMarker):
+    pass
 
 
-def join_all(type=None, timeout=None):
-    for controller in _central_command[type].copy():
-        controller.join(timeout)
+class HandlerNamespace:
+    _help_message = (
+        "You must specify which process the handler is meant to execute in:\n"
+        "# INCORRECT:\n"
+        "class MyWorker(mpc.Worker):\n"
+        "    @mpc.handler(MyTask)\n"
+        "    def my_handler_that_doesnt_know_where_to_execute(self, task):\n"
+        "        ...\n\n"
+        "# CORRECT:\n"
+        "class MyWorker(mpc.Worker):\n"
+        "    @mpc.handler.main(MyTask)\n"
+        "    def my_handler_that_executes_in_the_main_process(self, task):\n"
+        "        ...\n\n"
+        "    @mpc.handler.worker(MyTask)\n"
+        "    def my_handler_that_executes_in_the_worker_process(self, task):\n"
+        "        ..."
+    )
 
+    def worker(self, key):
+        try:
+            if issubclass(key, ipc.Signal):
+                return WorkerSignalMarker(key)
+        except Exception:
+            return WorkerTaskMarker(key)
+        else:
+            return WorkerTaskMarker(key)
 
-atexit.register(kill_all)
+    def main(self, key):
+        try:
+            if issubclass(key, ipc.Signal):
+                return MainSignalMarker(key)
+        except Exception:
+            return MainTaskMarker(key)
+        else:
+            return MainTaskMarker(key)
+
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError(self._help_message)
 
 
 class WorkerStatus(enum.Enum):
@@ -86,113 +79,74 @@ class WorkerStatus(enum.Enum):
     BUSY = 3
 
 
-class Controller:
-    POLL_INTERVAL = 0.05
+class ActiveWorkers:
+    _worker_lookup = collections.defaultdict(list)
 
-    def spawn(self):
-        if self._worker:
-            raise exceptions.WorkerExistsError(self._worker)
+    @classmethod
+    def get_by_type(cls, type):
+        if type is None:
+            return sum(cls._worker_lookup.values(), [])
+        return cls._worker_lookup[type]
 
-        self._worker = _central_command.spawn_worker(self)
-        self._reader = ipc.CommunicationManager(
-            self._worker.conn, self.signals, self._recv_message
-        )
-        self._reader.start()
-        return self
+    @classmethod
+    def send_all(cls, communication, type=None):
+        for worker in cls.get_by_type(type).copy():
+            worker.send(communication)
 
-    def kill(self):
-        if self._worker:
-            _central_command.kill_worker(self._worker)
-            self._reader.running = False
-            self._worker = None
-            self._reader.kill()
-            self._reader = None
+    @classmethod
+    def kill_all(cls, type=None):
+        for worker in cls.get_by_type(type).copy():
+            worker.kill()
 
-    def join(self, timeout=None):
-        if self._worker:
-            _central_command.join_worker(self._worker, timeout)
-            self._reader.running = False
-            self._worker = None
-            self._reader.join(timeout)
-            self._reader = None
+    @classmethod
+    def join_all(cls, type=None, timeout=None):
+        for worker in cls.get_by_type(type).copy():
+            worker.join(timeout)
 
-    def send(self, message_or_signal):
-        if _message_is_signal(message_or_signal):
-            self._send_signal(message_or_signal)
-        else:
-            self._send_message(message_or_signal)
+    @classmethod
+    def notify_worker_terminated(cls, worker):
+        try:
+            cls._worker_lookup[type(worker)].remove(worker)
+        except ValueError:
+            pass
 
-    @property
-    def id(self):
-        return self._id
-
-    @property
-    def status(self):
-        return self._worker.status if self._worker else WorkerStatus.DEAD
-
-    @property
-    def pid(self):
-        return self._worker.pid if self._worker else None
-
-    def __init__(self, worker_type, id):
-        self.worker_type = worker_type
-        self.message_callbacks = ipc.MethodMarker.make_callback_table(self)
-        self.signals = ipc.SignalMarker.make_signals(self)
-        self._worker = None
-        self._reader = None
-        self._id = id
-
-    def __repr__(self):
-        worker = f"Worker={self.worker_type.__name__}"
-        return f"<{self.__class__.__name__}: {worker}, id={self.id}>"
-
-    def __str__(self):
-        return repr(self)
-
-    def _send_message(self, message):
-        if type(message) not in self._worker.message_callbacks:
-            raise exceptions.UnknownMessageError(message, self._worker)
-        self._worker.conn.send(message)
-
-    def _send_signal(self, signal_type):
-        if not _send_signal(signal_type, self._worker.signals):
-            raise exceptions.UnknownMessageError(signal_type, self._worker)
-
-    def _recv_message(self, message):
-        key = type(message)
-
-        if key not in self.message_callbacks:
-            raise exceptions.UnknownMessageError(message, self)
-
-        for callback in self.message_callbacks[key]:
-            callback(message)
+    @classmethod
+    def notify_worker_started(cls, worker):
+        cls._worker_lookup[type(worker)].append(worker)
 
 
 class Worker(mp.Process):
-    CONTROLLER = Controller
-    POLL_INTERVAL = 0.05
+    def __init__(self):
+        self._manager = ipc.CommunicationManager(
+            main_tasks=MainTaskMarker.make_callback_table(self),
+            worker_tasks=WorkerTaskMarker.make_callback_table(self),
+            main_signals=MainSignalMarker.make_callback_table(self),
+            worker_signals=WorkerSignalMarker.make_callback_table(self),
+        )
+        self.__status = mp.Value("i", WorkerStatus.DEAD.value, lock=False)
+        self._running = False
+        super().__init__(target=self._main, args=(global_state.config,))
 
     def setup(self):
         """Optional stub for subclasses."""
 
-    def main(self):
+    def mainloop(self):
         """Optional stub for subclasses."""
 
     def teardown(self):
         """Optional stub for subclasses."""
 
     @classmethod
-    def controller(cls):
-        return _central_command.controller(cls.CONTROLLER, cls)
-
-    @classmethod
     def spawn(cls):
-        controller = cls.controller()
-        return controller.spawn()
+        worker = cls()
+        worker.start()
+        return worker
 
     @property
-    def id(self):
-        return self._id
+    def pid(self):
+        if self._running:
+            return super().pid
+        return None
 
     @property
     def status(self):
@@ -202,144 +156,129 @@ class Worker(mp.Process):
     def status(self, new_status: WorkerStatus):
         self.__status.value = new_status.value
 
-    def send(self, message_or_signal):
-        if _message_is_signal(message_or_signal):
-            if not _send_signal(message_or_signal, self._controller_signals):
-                repr = self._controller_repr
-                exc = exceptions.UnknownMessageError(message_or_signal, repr)
-                raise exc
-        else:
-            self._conn.send(message_or_signal)
+    def send(self, communication):
+        self._manager.send(communication)
 
-    def __init__(self, controller):
-        self.message_callbacks = ipc.MethodMarker.make_callback_table(self)
-        self.signals = ipc.SignalMarker.make_signals(self)
+    def start(self):
+        self._running = True
+        super().start()
+        ActiveWorkers.notify_worker_started(self)
+        self._manager.start()
 
-        self._conn, self.conn = mp.Pipe()
-        self._controller_signals = controller.signals
-        self._controller_repr = repr(controller)
-        self._id = controller.id
-        self._workthread = None
-        self._workthread_exception = None
-        self._jobqueue = None
-        self.__status = mp.Value("i", WorkerStatus.DEAD.value, lock=False)
+    def kill(self):
+        self._manager.kill()
+        super().kill()
+        ActiveWorkers.notify_worker_terminated(self)
         self._running = False
-        super().__init__(target=self._mainloop)
 
-    def __repr__(self):
-        return f"<{self.__class__.__name__}: {self._id}>"
+    def join(self, timeout=None):
+        self.send(ipc.Terminate)
+        super().join(timeout)
+        ActiveWorkers.notify_worker_terminated(self)
+        self._running = False
+        self._manager.join()
 
-    def __str__(self):
-        return repr(self)
+    def _main(self, config):
+        global_state.config = config
+        global_state.config.context = repr(self)
 
-    def _mainloop(self):
         try:
-            exitcode = 0
-            self._running = True
-            self._jobqueue = collections.deque()
-            self.setup()
-            self._workthread = threading.Thread(
-                target=self._workthread_mainloop
-            )
-            self._workthread.start()
+            self._setup()
 
             while self._running:
-                self._process_messages()
-                self._handle_signals()
-                time.sleep(self.POLL_INTERVAL)
-
-            self._workthread.join()
-
-            # one final poll for communication
-            self._process_messages()
-            self._handle_signals()
-            self._flush_jobqueue()
-
-            if self._workthread_exception is not None:
-                self.send(self._workthread_exception)
-                exitcode = 1
+                self._mainloop()
 
         except Exception as exc:
-            self.send(self._wrap_exception(exc))
-            exitcode = 1
+            self.send(exceptions.WorkerRuntimeError(exc))
+            self._exitcode = 1
+
+        finally:
+            self._teardown()
+
+        self.__status.value = WorkerStatus.DEAD.value
+        raise SystemExit(self._exitcode)
+
+    def _setup(self):
+        self._running = True
+        self._exitcode = 0
+        self._manager.start()
+        self._taskthread = _TaskThread(
+            taskq=self._manager.taskq,
+            on_idle=self._set_idle,
+            on_busy=self._set_busy,
+        )
+        self._taskthread.start()
+        self.setup()
+
+    def _mainloop(self):
+        self.mainloop()
+        time.sleep(global_state.config.poll_interval)
+
+    def _teardown(self):
+        try:
+            self._manager.join()
+            self._taskthread.join()
+            self._flush_incoming_communication()
+        except Exception as exc:
+            if self._exitcode == 0:
+                self.send(exceptions.WorkerRuntimeError(exc))
+                self._exitcode = 3
 
         try:
             self.teardown()
         except Exception as exc:
-            if exitcode == 0:
-                self.send(self._wrap_exception(exc))
-                exitcode = 1
+            if self._exitcode == 0:
+                self.send(exceptions.WorkerRuntimeError(exc))
+                self._exitcode = 4
 
-        self.__status.value = WorkerStatus.DEAD.value
-        return exitcode
-
-    def _main(self):
-        if not self._jobqueue:
-            self.status = WorkerStatus.IDLE
-            time.sleep(self.POLL_INTERVAL)
-        else:
-            self.status = WorkerStatus.BUSY
-            job = self._jobqueue.popleft()
-            job.do()
-        self.main()
-
-    def _process_messages(self):
-        while self._conn.poll(0):
-            message = self._conn.recv()
-            job = self._message_to_job(message)
-            self._jobqueue.append(job)
-
-    def _handle_signals(self):
-        for sig in self.signals.values():
-            sig.handle()
-
-    def _message_to_job(self, message):
-        key = type(message)
-        callbacks = self.message_callbacks[key]
-
-        if not callbacks:
-            raise exceptions.UnknownMessageError(message, self)
-
-        return _Job(callbacks, message)
-
-    def _flush_jobqueue(self):
-        for job in self._jobqueue:
-            job.do()
-
-    def _workthread_mainloop(self):
-        try:
-            while self._running:
-                self._main()
-        except Exception as exc:
-            self._workthread_exception = self._wrap_exception(exc)
-            self._running = False
-
-    def _wrap_exception(self, exc):
-        tb = traceback.format_exc()
-        wrapped_exc = exceptions.UnhandledWorkerError(exc, tb)
-        return wrapped_exc
-
-    @ipc.signal_handler(ipc.Terminate)
+    @WorkerSignalMarker(ipc.Terminate)
     def _handle_termination_signal(self):
         self._running = False
 
+    def _flush_incoming_communication(self):
+        self._manager.flush_inbound_communication()
+        for handler in self._manager.taskq.copy():
+            handler()
 
-class _Job:
-    def __init__(self, callbacks, message):
-        self._callbacks = callbacks
-        self._args = (message,)
+    def _set_idle(self):
+        self.status = WorkerStatus.IDLE
 
-    def do(self):
-        for cb in self._callbacks:
-            cb(*self._args)
-
-
-def _send_signal(type, signals):
-    if type not in signals:
-        return False
-    signals[type].activate()
-    return True
+    def _set_busy(self):
+        self.status = WorkerStatus.BUSY
 
 
-def _message_is_signal(message):
-    return isinstance(message, type) and issubclass(message, ipc.Signal)
+class _TaskThread(util.MainloopThread):
+    def __init__(self, taskq, on_idle, on_busy):
+        self.taskq = taskq
+        self.on_idle = on_idle
+        self.on_busy = on_busy
+        self._idle = True
+        self.on_idle()
+        super().__init__()
+
+    @property
+    def idle(self):
+        return self._idle
+
+    @idle.setter
+    def idle(self, value):
+        if self._idle and not value:
+            self._idle = False
+            self.on_idle()
+        elif not self._idle and value:
+            self._idle = True
+            self.on_busy()
+
+    def mainloop(self):
+        if not self.taskq:
+            self.idle = True
+            time.sleep(global_state.config.poll_interval)
+
+        else:
+            self.idle = False
+
+            try:
+                handler = self.taskq.popleft()
+                handler()
+            except Exception as exc:
+                ipc.MainThreadInterruption.interrupt_main(exc)

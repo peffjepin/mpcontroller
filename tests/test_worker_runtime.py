@@ -1,98 +1,136 @@
+import multiprocessing as mp
+import time
+
+import pytest
+
 from .conftest import happens_soon
 from .conftest import exception_soon
-from .conftest import Worker
-from .conftest import RecordedController
-from .conftest import ExampleMessage
-from .conftest import EqualityException
-from .conftest import FAST_TIMEOUT
 
 import mpcontroller as mpc
 
 
+class TimeTrackingWorker(mpc.Worker):
+    def __init__(self):
+        self.setuptime = mp.Value("d", -1)
+        self.mainlooptime = mp.Value("d", -1)
+        self.teardowntime = mp.Value("d", -1)
+        super().__init__()
+
+    def setup(self):
+        self.setuptime.value = time.time()
+
+    def mainloop(self):
+        self.mainlooptime.value = time.time()
+
+    def teardown(self):
+        self.teardowntime.value = time.time()
+
+
+class TimeTrackingWorkerErrorInMainloop(TimeTrackingWorker):
+    exc = mpc.Exception("testing")
+    expected = mpc.WorkerRuntimeError(exc)
+
+    def mainloop(self):
+        super().mainloop()
+        raise self.exc
+
+
 def test_setup_is_called_first():
-    controller = VerboseWorker.spawn()
+    worker = TimeTrackingWorker.spawn()
 
     @happens_soon
-    def setup_message_shows_up():
-        controller.msg_cb.nth(0).assert_called_with(
-            VerboseWorker.SETUP_MESSAGE
-        )
+    def setup_time_recorded():
+        assert worker.setuptime.value > 0
 
 
-def test_main_executes_in_a_loop():
-    controller = VerboseWorker.spawn()
+def test_main_executes_in_a_loop_after_setup():
+    worker = TimeTrackingWorker.spawn()
+    times = []
 
     @happens_soon
-    def multiple_main_messages_appear():
-        controller.msg_cb.nth(0).assert_called_with(
-            VerboseWorker.SETUP_MESSAGE
-        )
-        controller.msg_cb.nth(1).assert_called_with(VerboseWorker.MAIN_MESSAGE)
-        controller.msg_cb.nth(2).assert_called_with(VerboseWorker.MAIN_MESSAGE)
+    def multiple_main_invokations_recorded_after_setup():
+        if worker.mainlooptime.value > 0:
+            times.append(worker.mainlooptime.value)
+
+        assert len(times) > 0
+        assert sorted(times) == times
+        assert times[-1] > times[0]
+        assert worker.setuptime.value < times[0]
 
 
 def test_teardown_executes_before_exit():
-    controller = VerboseWorker.spawn()
+    worker = TimeTrackingWorker.spawn()
 
     @happens_soon
     def process_begins_execution():
-        controller.msg_cb.nth(0).assert_called_with(
-            VerboseWorker.SETUP_MESSAGE
-        )
-        controller.msg_cb.nth(1).assert_called_with(VerboseWorker.MAIN_MESSAGE)
+        assert worker.mainlooptime.value > 0
 
-    controller.join(FAST_TIMEOUT)
-    controller.msg_cb.nth(-1).assert_called_with(
-        VerboseWorker.TEARDOWN_MESSAGE
-    )
+    worker.join()
+    assert worker.teardowntime.value > 0
 
 
 def test_teardown_still_executes_after_an_error_occurs():
-    controller = VerboseWorkerErrorInMain.controller()
+    worker = TimeTrackingWorkerErrorInMainloop()
 
-    @exception_soon(VerboseWorkerErrorInMain.EXC)
+    @exception_soon(TimeTrackingWorkerErrorInMainloop.expected)
     def cause():
-        controller.spawn()
+        worker.start()
 
-    controller.join(FAST_TIMEOUT)
-
-    controller.msg_cb.nth(-1).assert_called_with(
-        VerboseWorker.TEARDOWN_MESSAGE
-    )
+    worker.join()
+    assert worker.teardowntime.value > 0
 
 
-class VerboseWorker(Worker):
-    CONTROLLER = RecordedController
+class LeadsToErrorTestCase(mpc.Worker):
+    exc = NotImplemented
+    expected = NotImplemented
+    requires_join = False
 
-    SETUP_MESSAGE = ExampleMessage("setup")
-    MAIN_MESSAGE = ExampleMessage("main")
-    HANDLER_MESSAGE = ExampleMessage("handler")
-    TEARDOWN_MESSAGE = ExampleMessage("teardown")
+
+class ErrorInMainloop(LeadsToErrorTestCase):
+    exc = mpc.Exception("mainloop")
+    expected = mpc.WorkerRuntimeError(exc)
+
+    def mainloop(self):
+        raise self.exc
+
+
+class ErrorInSetup(LeadsToErrorTestCase):
+    exc = mpc.Exception("setup")
+    expected = mpc.WorkerRuntimeError(exc)
 
     def setup(self):
-        self.send(self.SETUP_MESSAGE)
-
-    def main(self):
-        self.send(self.MAIN_MESSAGE)
-
-    def teardown(self):
-        self.send(self.TEARDOWN_MESSAGE)
-
-    @mpc.message_handler(ExampleMessage)
-    def handler(self, _):
-        self.send(self.HANDLER_MESSAGE)
+        raise self.exc
 
 
-class VerboseWorkerErrorInMain(VerboseWorker):
-    EXC = EqualityException("error in main")
-
-    def main(self):
-        raise self.EXC
-
-
-class VerboseWorkerErrorInTeardown(VerboseWorker):
-    EXC = EqualityException("error in teardown")
+class ErrorInTeardown(LeadsToErrorTestCase):
+    exc = mpc.Exception("teardown")
+    expected = mpc.WorkerRuntimeError(exc)
+    requires_join = True
 
     def teardown(self):
-        super().teardown()
-        raise self.EXC
+        raise self.exc
+
+
+class ErrorInTeardownAfterErrorInMainloop(LeadsToErrorTestCase):
+    exc = mpc.Exception("mainloop")
+    expected = mpc.WorkerRuntimeError(exc)
+
+    def mainloop(self):
+        raise self.exc
+
+    def teardown(self):
+        raise mpc.Exception("teardown")
+
+
+@pytest.mark.parametrize(
+    "worker_under_test", LeadsToErrorTestCase.__subclasses__()
+)
+def test_worker_runtime_errors(worker_under_test):
+    worker = worker_under_test()
+
+    @exception_soon(worker.expected)
+    def cause():
+        worker.start()
+
+        if worker.requires_join:
+            worker.join()

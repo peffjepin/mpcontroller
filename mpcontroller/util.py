@@ -1,6 +1,9 @@
 import threading
+import time
 
 from collections import defaultdict
+
+from mpcontroller import global_state
 
 
 class MethodMarker:
@@ -55,6 +58,7 @@ class MainloopThread(threading.Thread):
         self._running = True
         while self._running:
             self.mainloop()
+            time.sleep(global_state.config.poll_interval)
 
     def join(self, timeout=None):
         self._running = False
