@@ -9,13 +9,6 @@ from . import exceptions
 from . import global_state
 
 
-def _sequential_ids():
-    id = 0
-    while True:
-        yield id
-        id += 1
-
-
 class WorkerTaskMarker(util.MethodMarker):
     pass
 
@@ -137,9 +130,9 @@ class Worker(mp.Process):
         """Optional stub for subclasses."""
 
     @classmethod
-    def spawn(cls):
+    def spawn(cls, auto=True):
         worker = cls()
-        worker.start()
+        worker.start(auto=auto)
         return worker
 
     @property
@@ -159,11 +152,14 @@ class Worker(mp.Process):
     def send(self, communication):
         self._manager.send(communication)
 
-    def start(self):
+    def recv(self):
+        self._manager.recv()
+
+    def start(self, auto=True):
         self._running = True
         super().start()
         ActiveWorkers.notify_worker_started(self)
-        self._manager.start()
+        self._manager.start(auto=auto)
 
     def kill(self):
         self._manager.kill()
@@ -183,7 +179,7 @@ class Worker(mp.Process):
 
     def _main(self, config):
         global_state.config = config
-        global_state.config.context = repr(self)
+        global_state.config.context = self
 
         try:
             self._setup()

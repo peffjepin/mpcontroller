@@ -134,6 +134,22 @@ def test_messaging_all_workers_of_a_given_type():
             assert not worker.record.called
 
 
+@pytest.mark.parametrize("communication", (example_task, ExampleSignal))
+def test_handles_communication_only_on_recv_when_not_auto(communication):
+    worker = Echo.spawn(auto=False)
+    worker.send(communication)
+
+    @doesnt_happen
+    def response_is_recieved():
+        worker.record.assert_called_with(communication)
+
+    @happens_soon
+    def response_is_recieved_after_recv_call():
+        assert worker.record.called == 0
+        worker.recv()
+        worker.record.assert_called_with(communication)
+
+
 class RecordedWorker(Worker):
     def __init__(self, *args, **kwargs):
         self.record = RecordedCallback()

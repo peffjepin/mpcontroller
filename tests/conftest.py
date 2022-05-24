@@ -11,9 +11,9 @@ from mpcontroller import worker
 from mpcontroller import ipc
 
 
-FAST_TIMEOUT = 1
+FAST_TIMEOUT = 3
 if os.environ.get("CI", None):
-    FAST_TIMEOUT = 30
+    FAST_TIMEOUT = 15
 
 VERY_FAST_TIMEOUT = FAST_TIMEOUT / 100
 FAST_POLL = FAST_TIMEOUT / 10_000

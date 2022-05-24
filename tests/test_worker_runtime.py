@@ -5,6 +5,7 @@ import pytest
 
 from .conftest import happens_soon
 from .conftest import exception_soon
+from .conftest import exception_soon_repeat
 
 import mpcontroller as mpc
 
@@ -125,7 +126,7 @@ class ErrorInTeardownAfterErrorInMainloop(LeadsToErrorTestCase):
 @pytest.mark.parametrize(
     "worker_under_test", LeadsToErrorTestCase.__subclasses__()
 )
-def test_worker_runtime_errors(worker_under_test):
+def test_worker_runtime_errors_automatic_communication(worker_under_test):
     worker = worker_under_test()
 
     @exception_soon(worker.expected)
@@ -134,3 +135,19 @@ def test_worker_runtime_errors(worker_under_test):
 
         if worker.requires_join:
             worker.join()
+
+
+@pytest.mark.parametrize(
+    "worker_under_test", LeadsToErrorTestCase.__subclasses__()
+)
+def test_worker_runtime_errors_manual_communication(worker_under_test):
+    worker = worker_under_test()
+
+    worker.start(auto=False)
+
+    @exception_soon_repeat(worker.expected)
+    def exception_occurs():
+        if worker.requires_join:
+            worker.join()
+        else:
+            worker.recv()
