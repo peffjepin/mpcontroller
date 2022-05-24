@@ -54,8 +54,8 @@ def test_main_executes_in_a_loop_after_setup():
 
         assert len(times) > 0
         assert sorted(times) == times
-        assert times[-1] > times[0]
-        assert worker.setuptime.value < times[0]
+        assert times[-1] >= times[0]
+        assert worker.setuptime.value <= times[0]
 
 
 def test_teardown_executes_before_exit():
