@@ -1,3 +1,4 @@
+import multiprocessing as mp
 import atexit
 
 from . import exceptions
@@ -22,6 +23,7 @@ __all__ = (
     "Worker",
     "WorkerRuntimeError",
     "config",
+    "cpu_count",
     "handler",
     "join_all",
     "kill_all",
@@ -35,5 +37,5 @@ handler = worker.HandlerNamespace()
 join_all = worker.ActiveWorkers.join_all
 kill_all = worker.ActiveWorkers.kill_all
 send_all = worker.ActiveWorkers.send_all
-
+cpu_count = mp.cpu_count()
 atexit.register(worker.ActiveWorkers.kill_all)

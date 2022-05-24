@@ -113,12 +113,11 @@ class CommunicationManager:
         self._signal_thread = None
 
     def start(self, *, auto=True):
-        self.taskq = collections.deque()
-
         self._auto = auto
         self._in_child_process = mp.current_process().name != "MainProcess"
 
         if self._in_child_process:
+            self.taskq = collections.deque()
             MainThreadInterruption.handler = self._worker_interrupt_handler
         if auto:
             self._start_workthreads()
@@ -134,18 +133,15 @@ class CommunicationManager:
             self._signal_thread.kill()
 
     def recv(self):
-        if self._auto:
-            return
-        else:
-            _process_signals(
-                self._local_signals.values(), self._on_runtime_exception
-            )
-            _process_messages(
-                self._local_conn,
-                self._on_task_recieved,
-                self._on_exception_recieved,
-                self._on_runtime_exception,
-            )
+        _process_signals(
+            self._local_signals.values(), self._on_runtime_exception
+        )
+        _process_messages(
+            self._local_conn,
+            self._on_task_recieved,
+            self._on_exception_recieved,
+            self._on_runtime_exception,
+        )
 
     def send(self, msg):
         if _is_signal(msg):
@@ -258,16 +254,10 @@ class CommunicationManager:
     @property
     def _on_runtime_exception(self):
         def main_implementation(exc):
-            if isinstance(exc, exceptions.WorkerRuntimeError) or isinstance(
-                exc, exceptions.UnknownMessageError
-            ):
-                exception = exc
-            else:
-                exception = exceptions.WorkerRuntimeError(exc)
             if self._auto:
-                MainThreadInterruption.interrupt_main(exception)
+                MainThreadInterruption.interrupt_main(exc)
             else:
-                raise exception
+                raise exc
 
         def worker_implementation(exc):
             MainThreadInterruption.interrupt_main(exc)
@@ -330,18 +320,13 @@ class ConnectionPollingThread(util.MainloopThread):
         super().__init__()
 
     def mainloop(self):
-        try:
-            _process_messages(
-                self._conn,
-                self._on_task,
-                self._on_exception,
-                self._on_runtime_exception,
-            )
-            time.sleep(global_state.config.poll_interval)
-        except Exception as exc:
-            MainThreadInterruption.interrupt_main(exc)
-        finally:
-            self._safe_flush_pipe()
+        _process_messages(
+            self._conn,
+            self._on_task,
+            self._on_exception,
+            self._on_runtime_exception,
+        )
+        time.sleep(global_state.config.poll_interval)
 
     def _on_runtime_exception(self, exc):
         if not self._running:
@@ -349,13 +334,7 @@ class ConnectionPollingThread(util.MainloopThread):
                 return
             if isinstance(exc, BrokenPipeError):
                 return
-        raise exc
-
-    def _safe_flush_pipe(self):
-        try:
-            _process_messages(self._conn, self._on_task, self._on_exception)
-        except Exception:
-            pass
+        MainThreadInterruption.interrupt_main(exc)
 
 
 def _is_signal(msg):

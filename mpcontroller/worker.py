@@ -170,6 +170,7 @@ class Worker(mp.Process):
         super().kill()
         ActiveWorkers.notify_worker_terminated(self)
         self._running = False
+        self.status = WorkerStatus.DEAD
 
     def join(self, timeout=None):
         self.send(ipc.Terminate)
@@ -177,6 +178,8 @@ class Worker(mp.Process):
         ActiveWorkers.notify_worker_terminated(self)
         self._running = False
         self._manager.join()
+        self._manager.flush_inbound_communication()
+        self.status = WorkerStatus.DEAD
 
     def _main(self, config):
         global_state.config = config
@@ -195,7 +198,6 @@ class Worker(mp.Process):
         finally:
             self._teardown()
 
-        self.__status.value = WorkerStatus.DEAD.value
         raise SystemExit(self._exitcode)
 
     def _setup(self):
@@ -215,6 +217,8 @@ class Worker(mp.Process):
         time.sleep(global_state.config.poll_interval)
 
     def _teardown(self):
+        self._running = False
+
         try:
             self._manager.join()
             self._taskthread.join()
@@ -230,6 +234,8 @@ class Worker(mp.Process):
             if self._exitcode == 0:
                 self.send(exceptions.WorkerRuntimeError(exc))
                 self._exitcode = 4
+
+        self.__status.value = WorkerStatus.DEAD.value
 
     @WorkerSignalMarker(ipc.Terminate)
     def _handle_termination_signal(self):
