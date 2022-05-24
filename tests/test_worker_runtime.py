@@ -8,6 +8,7 @@ from .conftest import exception_soon
 from .conftest import exception_soon_repeat
 
 import mpcontroller as mpc
+from mpcontroller import global_state
 
 
 class TimeTrackingWorker(mpc.Worker):
@@ -79,6 +80,32 @@ def test_teardown_still_executes_after_an_error_occurs():
 
     worker.join()
     assert worker.teardowntime.value > 0
+
+
+class GlobalStateTestCase(mpc.Worker):
+    expected = 1 / 1000
+
+    def __init__(self):
+        self.value = mp.Value("d", 0)
+        super().__init__()
+
+    def setup(self):
+        self.value.value = global_state.config.poll_interval
+
+
+def test_global_state_transfered_to_worker():
+    original = global_state.config.poll_interval
+    global_state.config.poll_interval = GlobalStateTestCase.expected
+
+    try:
+        worker = GlobalStateTestCase.spawn()
+
+        @happens_soon
+        def value_is_set():
+            worker.value.value == GlobalStateTestCase.expected
+
+    finally:
+        global_state.config.poll_interval = original
 
 
 class LeadsToErrorTestCase(mpc.Worker):
