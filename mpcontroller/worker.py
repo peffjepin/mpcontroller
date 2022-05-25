@@ -17,6 +17,11 @@ class WorkerSignalMarker(util.MethodMarker):
     pass
 
 
+class WorkerScheduleMarker(util.MethodMarker):
+    def __init__(self, interval):
+        super().__init__(interval)
+
+
 class MainTaskMarker(util.MethodMarker):
     pass
 
@@ -25,9 +30,14 @@ class MainSignalMarker(util.MethodMarker):
     pass
 
 
-class HandlerNamespace:
+class MainScheduleMarker(util.MethodMarker):
+    def __init__(self, interval):
+        super().__init__(interval)
+
+
+class _DecoratorNamespace:
     _help_message = (
-        "You must specify which process the handler is meant to execute in:\n"
+        "You must specify which process the decorated function is meant to execute in:\n"
         "# INCORRECT:\n"
         "class MyWorker(mpc.Worker):\n"
         "    @mpc.handler(MyTask)\n"
@@ -43,6 +53,25 @@ class HandlerNamespace:
         "        ..."
     )
 
+    def worker(self, key):
+        raise NotImplementedError()
+
+    def main(self, key):
+        raise NotImplementedError()
+
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError(self._help_message)
+
+
+class ScheduleNamespace(_DecoratorNamespace):
+    def worker(self, interval):
+        return WorkerScheduleMarker(interval)
+
+    def main(self, interval):
+        return MainScheduleMarker(interval)
+
+
+class HandlerNamespace(_DecoratorNamespace):
     def worker(self, key):
         try:
             if issubclass(key, ipc.Signal):
@@ -60,9 +89,6 @@ class HandlerNamespace:
             return MainTaskMarker(key)
         else:
             return MainTaskMarker(key)
-
-    def __call__(self, *args, **kwargs):
-        raise RuntimeError(self._help_message)
 
 
 class WorkerStatus(enum.Enum):
@@ -108,17 +134,27 @@ class ActiveWorkers:
         cls._worker_lookup[type(worker)].append(worker)
 
 
-class Worker(mp.Process):
+class _WorkerProcess(mp.Process):
+    def __init__(self, worker):
+        self.worker = worker
+        super().__init__(target=self._main, args=(global_state.config,))
+
+    def _main(self, cfg):
+        self.worker.main(cfg)
+
+
+class Worker:
     def __init__(self):
+        self._process = _WorkerProcess(self)
         self._manager = ipc.CommunicationManager(
             main_tasks=MainTaskMarker.make_callback_table(self),
             worker_tasks=WorkerTaskMarker.make_callback_table(self),
             main_signals=MainSignalMarker.make_callback_table(self),
             worker_signals=WorkerSignalMarker.make_callback_table(self),
         )
+        self._init_schedule(MainScheduleMarker)
         self.__status = mp.Value("i", WorkerStatus.DEAD.value, lock=False)
         self._running = False
-        super().__init__(target=self._main, args=(global_state.config,))
 
     def setup(self):
         """Optional stub for subclasses."""
@@ -138,7 +174,7 @@ class Worker(mp.Process):
     @property
     def pid(self):
         if self._running:
-            return super().pid
+            return self._process.pid
         return None
 
     @property
@@ -154,31 +190,43 @@ class Worker(mp.Process):
 
     def recv(self):
         self._manager.recv()
+        if self._schedule:
+            self._schedule.update()
 
     def start(self, auto=True):
         self._running = True
-        super().start()
-        ActiveWorkers.notify_worker_started(self)
+        self._process.start()
         self._manager.start(auto=auto)
 
+        if auto and self._schedule:
+            self._schedule_thread = _ScheduleThread(self._schedule)
+            self._schedule_thread.start()
+
+        ActiveWorkers.notify_worker_started(self)
+
     def kill(self):
+        if self._schedule_thread:
+            self._schedule_thread.kill()
         self._manager.kill()
-        super().kill()
-        ActiveWorkers.notify_worker_terminated(self)
+        self._process.kill()
         self._running = False
         self.status = WorkerStatus.DEAD
+        ActiveWorkers.notify_worker_terminated(self)
 
     def join(self, timeout=None):
+        if self._schedule_thread:
+            self._schedule_thread.join()
         self.send(ipc.Terminate)
-        super().join(timeout)
-        ActiveWorkers.notify_worker_terminated(self)
-        self._running = False
+        self._process.join(timeout)
         self._manager.join()
         self._manager.flush_inbound_communication()
+        self._running = False
         self.status = WorkerStatus.DEAD
+        ActiveWorkers.notify_worker_terminated(self)
 
-    def _main(self, config):
+    def main(self, config):
         global_state.config = config
+        global_state.clock = util.Clock(config.poll_interval)
         global_state.config.context = self
 
         try:
@@ -196,6 +244,16 @@ class Worker(mp.Process):
 
         raise SystemExit(self._exitcode)
 
+    def _init_schedule(self, markers):
+        scheduled_tasks = markers.make_callback_table(self)
+        if scheduled_tasks:
+            schedule = util.Schedule(scheduled_tasks.items())
+        else:
+            schedule = None
+
+        self._schedule_thread = None
+        self._schedule = schedule
+
     def _setup(self):
         self._running = True
         self._exitcode = 0
@@ -206,11 +264,14 @@ class Worker(mp.Process):
             on_busy=self._set_busy,
         )
         self._taskthread.start()
+        self._init_schedule(WorkerScheduleMarker)
         self.setup()
 
     def _mainloop(self):
         self.mainloop()
-        time.sleep(global_state.config.poll_interval)
+        if self._schedule:
+            self._schedule.update()
+        global_state.clock.tick(self)
 
     def _teardown(self):
         self._running = False
@@ -231,7 +292,7 @@ class Worker(mp.Process):
                 self.send(exceptions.WorkerRuntimeError(exc))
                 self._exitcode = 4
 
-        self.__status.value = WorkerStatus.DEAD.value
+        self.status = WorkerStatus.DEAD
 
     @WorkerSignalMarker(ipc.Terminate)
     def _handle_termination_signal(self):
@@ -274,7 +335,7 @@ class _TaskThread(util.MainloopThread):
     def mainloop(self):
         if not self.taskq:
             self.idle = True
-            time.sleep(global_state.config.poll_interval)
+            global_state.clock.tick(self)
 
         else:
             self.idle = False
@@ -284,3 +345,12 @@ class _TaskThread(util.MainloopThread):
                 handler()
             except Exception as exc:
                 ipc.MainThreadInterruption.interrupt_main(exc)
+
+
+class _ScheduleThread(util.MainloopThread):
+    def __init__(self, schedule):
+        self.schedule = schedule
+        super().__init__()
+
+    def mainloop(self):
+        self.schedule.update()

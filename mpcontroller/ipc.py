@@ -120,12 +120,11 @@ class CommunicationManager:
             self.taskq = collections.deque()
             MainThreadInterruption.handler = self._worker_interrupt_handler
         if auto:
-            self._start_workthreads()
+            self._start_communication_thread()
 
     def join(self, timeout=None):
         if self._auto:
-            self._pipe_thread.join(timeout)
-            self._signal_thread.join(timeout)
+            self._communication_thread.join(timeout)
 
     def kill(self):
         if self._auto and self._pipe_thread:
@@ -198,17 +197,9 @@ class CommunicationManager:
 
         sigobj.activate()
 
-    def _start_workthreads(self):
-        self._pipe_thread = ConnectionPollingThread(
-            self._local_conn,
-            self._on_task_recieved,
-            self._on_exception_recieved,
-        )
-        self._signal_thread = SignalProcessingThread(
-            self._local_signals.values(), self._on_runtime_exception
-        )
-        self._pipe_thread.start()
-        self._signal_thread.start()
+    def _start_communication_thread(self):
+        self._communication_thread = CommunicationPollingThread(self)
+        self._communication_thread.start()
 
     def _worker_interrupt_handler(self, exc):
         # this is executed in the child process when the main thread is
@@ -301,40 +292,13 @@ class CommunicationManager:
         )
 
 
-class SignalProcessingThread(util.MainloopThread):
-    def __init__(self, signals_to_watch, on_exception):
-        self._signals = signals_to_watch
-        self._on_exception = on_exception
+class CommunicationPollingThread(util.MainloopThread):
+    def __init__(self, manager):
+        self._manager = manager
         super().__init__()
 
     def mainloop(self):
-        _process_signals(self._signals, self._on_exception)
-        time.sleep(global_state.config.poll_interval)
-
-
-class ConnectionPollingThread(util.MainloopThread):
-    def __init__(self, conn, on_task, on_exception):
-        self._conn = conn
-        self._on_task = on_task
-        self._on_exception = on_exception
-        super().__init__()
-
-    def mainloop(self):
-        _process_messages(
-            self._conn,
-            self._on_task,
-            self._on_exception,
-            self._on_runtime_exception,
-        )
-        time.sleep(global_state.config.poll_interval)
-
-    def _on_runtime_exception(self, exc):
-        if not self._running:
-            if isinstance(exc, EOFError):
-                return
-            if isinstance(exc, BrokenPipeError):
-                return
-        MainThreadInterruption.interrupt_main(exc)
+        self._manager.recv()
 
 
 def _is_signal(msg):
@@ -352,7 +316,7 @@ def _process_messages(
     conn, on_task, on_exception_recieved=_raise, on_runtime_exception=_raise
 ):
     try:
-        while conn.poll(0):
+        while conn.poll(global_state.config.poll_timeout):
             msg = conn.recv()
             if isinstance(msg, Exception):
                 on_exception_recieved(msg)

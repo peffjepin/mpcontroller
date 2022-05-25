@@ -4,8 +4,11 @@ import time
 import pytest
 
 from .conftest import happens_soon
+from .conftest import doesnt_happen
 from .conftest import exception_soon
 from .conftest import exception_soon_repeat
+from .conftest import VERY_FAST_TIMEOUT
+from .conftest import FAST_TIMEOUT
 
 import mpcontroller as mpc
 from mpcontroller import global_state
@@ -178,3 +181,39 @@ def test_worker_runtime_errors_manual_communication(worker_under_test):
             worker.join()
         else:
             worker.recv()
+
+
+@pytest.mark.parametrize("auto", (True, False))
+def test_scheduled_function_should_be_called_multiple_times(auto):
+    class ScheduleWorker(mpc.Worker):
+        called = 0
+
+        @mpc.schedule.main(VERY_FAST_TIMEOUT / 100)
+        def should_be_called_multiple_times(self):
+            self.called += 1
+
+    worker = ScheduleWorker.spawn(auto=auto)
+
+    @happens_soon
+    def scheduled_task_is_executed_multiple_times():
+        if not auto:
+            worker.recv()
+        assert worker.called >= 2
+
+
+@pytest.mark.parametrize("auto", (True, False))
+def test_scheduled_function_should_be_called_only_once(auto):
+    class ScheduleWorker(mpc.Worker):
+        called = 0
+
+        @mpc.schedule.main(10 * FAST_TIMEOUT)
+        def should_be_called_multiple_times(self):
+            self.called += 1
+
+    worker = ScheduleWorker.spawn(auto=auto)
+
+    @doesnt_happen
+    def scheduled_task_is_executed_multiple_times():
+        if not auto:
+            worker.recv()
+        assert worker.called >= 2

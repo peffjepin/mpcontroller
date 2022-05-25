@@ -4,6 +4,7 @@ import atexit
 from . import exceptions
 from . import global_state
 from . import ipc
+from . import util
 from . import worker
 
 from .exceptions import PicklableException as Exception
@@ -27,15 +28,18 @@ __all__ = (
     "handler",
     "join_all",
     "kill_all",
+    "schedule",
     "send_all",
 )
 
 BUSY = worker.WorkerStatus.BUSY
 DEAD = worker.WorkerStatus.DEAD
 IDLE = worker.WorkerStatus.IDLE
+cpu_count = mp.cpu_count()
 handler = worker.HandlerNamespace()
 join_all = worker.ActiveWorkers.join_all
 kill_all = worker.ActiveWorkers.kill_all
+schedule = worker.ScheduleNamespace()
 send_all = worker.ActiveWorkers.send_all
-cpu_count = mp.cpu_count()
+
 atexit.register(worker.ActiveWorkers.kill_all)

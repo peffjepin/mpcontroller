@@ -1,9 +1,10 @@
 import threading
 import time
+import heapq
 
 from collections import defaultdict
 
-from mpcontroller import global_state
+from . import global_state
 
 
 class MethodMarker:
@@ -58,7 +59,7 @@ class MainloopThread(threading.Thread):
         self._running = True
         while self._running:
             self.mainloop()
-            time.sleep(global_state.config.poll_interval)
+            global_state.clock.tick(self)
 
     def join(self, timeout=None):
         self._running = False
@@ -69,3 +70,45 @@ class MainloopThread(threading.Thread):
 
     def mainloop(self):
         raise NotImplementedError()
+
+
+class Schedule:
+    def __init__(self, interval_callbacks_pairs):
+        self._timeouts = []
+        now = time.time()
+        for interval, fns in interval_callbacks_pairs:
+            self._push(now, interval, fns)
+
+    def _push(self, deadline, interval, callbacks):
+        item = (deadline, interval, callbacks)
+        heapq.heappush(self._timeouts, item)
+
+    def _pop(self):
+        return heapq.heappop(self._timeouts)
+
+    def update(self):
+        now = time.time()
+
+        deadline, interval, callbacks = self._pop()
+        while now > deadline:
+            for fn in callbacks:
+                fn()
+            self._push(time.time() + interval, interval, callbacks)
+            deadline, interval, callbacks = self._pop()
+
+        self._push(time.time() + interval, interval, callbacks)
+
+
+class Clock:
+    def __init__(self, interval=None):
+        self._consumers = dict()
+        self._interval = interval or global_state.config.poll_interval
+
+    def tick(self, consumer):
+        if consumer not in self._consumers:
+            time.sleep(self._interval)
+            self._consumers[consumer] = time.time() + self._interval
+        else:
+            next = self._consumers[consumer]
+            time.sleep(max(0, next - time.time()))
+            self._consumers[consumer] = time.time() + self._interval
