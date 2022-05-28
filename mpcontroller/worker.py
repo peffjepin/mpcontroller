@@ -1,4 +1,3 @@
-import time
 import enum
 import collections
 import multiprocessing as mp
@@ -18,8 +17,7 @@ class WorkerSignalMarker(util.MethodMarker):
 
 
 class WorkerScheduleMarker(util.MethodMarker):
-    def __init__(self, interval):
-        super().__init__(interval)
+    pass
 
 
 class MainTaskMarker(util.MethodMarker):
@@ -31,8 +29,7 @@ class MainSignalMarker(util.MethodMarker):
 
 
 class MainScheduleMarker(util.MethodMarker):
-    def __init__(self, interval):
-        super().__init__(interval)
+    pass
 
 
 class _DecoratorNamespace:

@@ -1,5 +1,5 @@
 import _thread
-import time
+import typing
 import signal
 import traceback
 import collections
@@ -52,6 +52,102 @@ class MainThreadInterruption:
 
 
 signal.signal(signal.SIGINT, MainThreadInterruption._handle_interrupt)
+
+
+def _sequential_ids():
+    id = 0
+    while True:
+        id += 1
+        yield id
+
+
+_typecode_gen = _sequential_ids()
+
+
+class Message:
+    _class_lookup = dict()
+
+    typecodes: set
+    _idgen: typing.Generator
+
+    def __init_subclass__(cls):
+        cls.typecodes = set()
+        cls._idgen = _sequential_ids()
+
+    def __new__(cls, name="", fields=""):
+        typecode = next(_typecode_gen)
+        modified_fields = "typecode id " + fields
+        modified_name = name or cls.__name__ + f"{typecode}"
+        base_factory = collections.namedtuple(modified_name, modified_fields)
+        cls._class_lookup[typecode] = base_factory
+        cls.typecodes.add(typecode)
+
+        original_new = base_factory.__new__
+
+        def __new__(nt_cls, *args, **kwargs):
+            nfields = len(nt_cls._fields)
+
+            # when called with all params just construct normally
+            # this happens when deserializing a dumped message
+            if len(args) == nfields or len(kwargs) == nfields:
+                return original_new(nt_cls, *args, **kwargs)
+
+            # otherwise we have to inject the additional fields that we have
+            # added onto the class
+            return original_new(
+                nt_cls,
+                nt_cls._typecode,
+                next(cls._idgen),
+                *args,
+                **kwargs,
+            )
+
+        __new__.__doc__ = original_new.__doc__
+        __new__.__qualname__ = original_new.__qualname__
+
+        original_repr = base_factory.__repr__
+
+        def __repr__(self):
+            return original_repr(self).replace(
+                f"typecode={self.typecode}, ", ""
+            )
+
+        __repr__.__doc__ = original_repr.__doc__
+        __repr__.__qualname__ = original_repr.__qualname__
+
+        base_factory.__new__ = __new__
+        base_factory.__repr__ = __repr__
+        base_factory._typecode = typecode
+
+        return base_factory
+
+    @classmethod
+    def dump(cls, msg, fmt):
+        if fmt is tuple:
+            return tuple(msg)
+        elif fmt is list:
+            return list(msg)
+        elif fmt is dict:
+            return msg._asdict()
+        else:
+            raise ValueError(f"Expected {fmt=} to be in (tuple, list, dict)")
+
+    @classmethod
+    def load(cls, dump):
+        if isinstance(dump, dict):
+            namedtup = cls._class_lookup[dump["typecode"]]
+            return namedtup(**dump)
+        else:
+            namedtup = cls._class_lookup[dump[0]]
+            return namedtup(*dump)
+
+
+class Event(Message):
+    pass
+
+
+class Task(Message):
+    pass
 
 
 class Signal:
