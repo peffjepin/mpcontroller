@@ -130,7 +130,9 @@ class Message:
         elif fmt is dict:
             return msg._asdict()
         else:
-            raise ValueError(f"Expected {fmt=} to be in (tuple, list, dict)")
+            raise ValueError(
+                f"Expected fmt={fmt} to be in (tuple, list, dict)"
+            )
 
     @classmethod
     def load(cls, dump):
