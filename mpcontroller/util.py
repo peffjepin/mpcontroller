@@ -10,36 +10,26 @@ from . import config
 class MethodMarker:
     _registry = defaultdict(lambda: defaultdict(list))
 
-    def __init_subclass__(cls):
-        cls._registry = defaultdict(lambda: defaultdict(list))
+    def __init__(self):
+        self._registry = defaultdict(lambda: defaultdict(list))
 
-    def __init__(self, key):
-        self._key = key
+    def mark(self, key):
+        def capture_fn(fn):
+            return _MarkedFunctionWrapper(fn, key, self._registry)
 
-    def __call__(self, fn):
-        self._fn = fn
-        return self
+        return capture_fn
 
-    def __set_name__(self, cls, name):
-        setattr(cls, name, self._fn)
-        self._register(name, cls)
+    def get_registered_keys(self, type):
+        return self._registry[type].keys()
 
-    def _register(self, name, cls):
-        self._registry[cls][self._key].append(name)
-
-    @classmethod
-    def get_registered_keys(cls, type):
-        return cls._registry[type].keys()
-
-    @classmethod
-    def make_callback_table(cls, object):
+    def make_callback_table(self, object):
         classes_to_check = type(object).__mro__[:-1]
         callbacks_seen = set()
 
         table = defaultdict(list)
 
         for c in classes_to_check:
-            for key, names in cls._registry[c].items():
+            for key, names in self._registry[c].items():
                 for name in names:
                     if name in callbacks_seen:
                         continue
@@ -48,6 +38,17 @@ class MethodMarker:
                     table[key].append(bound_method)
 
         return table
+
+
+class _MarkedFunctionWrapper:
+    def __init__(self, fn, key, registry):
+        self._fn = fn
+        self._key = key
+        self._registry = registry
+
+    def __set_name__(self, cls, name):
+        setattr(cls, name, self._fn)
+        self._registry[cls][self._key].append(name)
 
 
 class Schedule:

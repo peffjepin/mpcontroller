@@ -35,10 +35,10 @@ BUSY = worker.WorkerStatus.BUSY
 DEAD = worker.WorkerStatus.DEAD
 IDLE = worker.WorkerStatus.IDLE
 cpu_count = mp.cpu_count()
-handler = worker.HandlerNamespace()
+handler = worker.handler_namespace
 join_all = worker.ActiveWorkers.join_all
 kill_all = worker.ActiveWorkers.kill_all
-schedule = worker.ScheduleNamespace()
+schedule = worker.schedule_namespace
 send_all = worker.ActiveWorkers.send_all
 
 atexit.register(worker.ActiveWorkers.kill_all)

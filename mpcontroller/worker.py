@@ -8,28 +8,13 @@ from . import exceptions
 from . import config
 
 
-class WorkerTaskMarker(util.MethodMarker):
-    pass
+main_task_marker = util.MethodMarker()
+main_signal_marker = util.MethodMarker()
+main_schedule_marker = util.MethodMarker()
 
-
-class WorkerSignalMarker(util.MethodMarker):
-    pass
-
-
-class WorkerScheduleMarker(util.MethodMarker):
-    pass
-
-
-class MainTaskMarker(util.MethodMarker):
-    pass
-
-
-class MainSignalMarker(util.MethodMarker):
-    pass
-
-
-class MainScheduleMarker(util.MethodMarker):
-    pass
+worker_task_marker = util.MethodMarker()
+worker_signal_marker = util.MethodMarker()
+worker_schedule_marker = util.MethodMarker()
 
 
 class _DecoratorNamespace:
@@ -60,32 +45,36 @@ class _DecoratorNamespace:
         raise RuntimeError(self._help_message)
 
 
-class ScheduleNamespace(_DecoratorNamespace):
+class _ScheduleNamespace(_DecoratorNamespace):
     def worker(self, interval):
-        return WorkerScheduleMarker(interval)
+        return worker_schedule_marker.mark(interval)
 
     def main(self, interval):
-        return MainScheduleMarker(interval)
+        return main_schedule_marker.mark(interval)
 
 
-class HandlerNamespace(_DecoratorNamespace):
+class _HandlerNamespace(_DecoratorNamespace):
     def worker(self, key):
         try:
             if issubclass(key, ipc.Signal):
-                return WorkerSignalMarker(key)
+                return worker_signal_marker.mark(key)
         except Exception:
-            return WorkerTaskMarker(key)
+            return worker_task_marker.mark(key)
         else:
-            return WorkerTaskMarker(key)
+            return worker_task_marker.mark(key)
 
     def main(self, key):
         try:
             if issubclass(key, ipc.Signal):
-                return MainSignalMarker(key)
+                return main_signal_marker.mark(key)
         except Exception:
-            return MainTaskMarker(key)
+            return main_task_marker.mark(key)
         else:
-            return MainTaskMarker(key)
+            return main_task_marker.mark(key)
+
+
+schedule_namespace = _ScheduleNamespace()
+handler_namespace = _HandlerNamespace()
 
 
 class WorkerStatus(enum.Enum):
@@ -153,12 +142,12 @@ class Worker:
     def __init__(self):
         self._process = _WorkerProcess(self)
         self._manager = ipc.CommunicationManager(
-            main_tasks=MainTaskMarker.make_callback_table(self),
-            worker_tasks=WorkerTaskMarker.make_callback_table(self),
-            main_signals=MainSignalMarker.make_callback_table(self),
-            worker_signals=WorkerSignalMarker.make_callback_table(self),
+            main_tasks=main_task_marker.make_callback_table(self),
+            worker_tasks=worker_task_marker.make_callback_table(self),
+            main_signals=main_signal_marker.make_callback_table(self),
+            worker_signals=worker_signal_marker.make_callback_table(self),
         )
-        self._init_schedule(MainScheduleMarker)
+        self._init_schedule(main_schedule_marker)
         self._status = mp.Value("i", WorkerStatus.DEAD.value, lock=False)
         self._running = False
 
@@ -240,7 +229,7 @@ class Worker:
                 on_busy=self._set_busy,
             )
             self._taskthread.start()
-            self._init_schedule(WorkerScheduleMarker)
+            self._init_schedule(worker_schedule_marker)
             self.setup()
         except Exception as exc:
             self.send(exceptions.WorkerRuntimeError(exc))
@@ -282,7 +271,7 @@ class Worker:
         self._schedule_thread = None
         self._schedule = schedule
 
-    @WorkerSignalMarker(ipc.Terminate)
+    @handler_namespace.worker(ipc.Terminate)
     def _handle_termination_signal(self):
         self._running = False
 

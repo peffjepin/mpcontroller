@@ -1,10 +1,13 @@
 from mpcontroller.util import MethodMarker
 
 
+example_marker = MethodMarker()
+
+
 class ExampleMarked:
     value = 0
 
-    @MethodMarker("test")
+    @example_marker.mark("test")
     def add1(self):
         self.value += 1
 
@@ -20,7 +23,7 @@ def test_marked_method_called_normally():
 def test_marked_method_called_from_callback_table():
     obj = ExampleMarked()
 
-    for method in MethodMarker.make_callback_table(obj)["test"]:
+    for method in example_marker.make_callback_table(obj)["test"]:
         method()
 
     assert obj.value == 1
@@ -32,7 +35,7 @@ def test_subclass_inherits_marks():
 
     obj = MarkedBlankSubclass()
 
-    for method in MethodMarker.make_callback_table(obj)["test"]:
+    for method in example_marker.make_callback_table(obj)["test"]:
         method()
 
     assert obj.value == 1
@@ -45,49 +48,53 @@ def test_subclass_overrides_mark():
 
     obj = MarkedOverride()
 
-    for method in MethodMarker.make_callback_table(obj)["test"]:
+    for method in example_marker.make_callback_table(obj)["test"]:
         method()
 
     assert obj.value == 2
 
 
 def test_method_with_args():
+    marker = MethodMarker()
+
     class Marked:
         value = 0
 
-        @MethodMarker("test")
+        @marker.mark("test")
         def mark(self, arg1, arg2, kwarg1=0):
             self.value += 1
 
     obj = Marked()
 
-    for method in MethodMarker.make_callback_table(obj)["test"]:
+    for method in marker.make_callback_table(obj)["test"]:
         method(1, 2, kwarg1=3)
 
     assert obj.value == 1
 
 
 def test_multiple_marks():
+    marker = MethodMarker()
+
     class Marked:
         m1, m2, m3 = 0, 0, 0
 
-        @MethodMarker("test")
+        @marker.mark("test")
         def mark1(self):
             self.m1 += 1
 
-        @MethodMarker("test")
+        @marker.mark("test")
         def mark2(self):
             self.m2 += 1
 
-        @MethodMarker("hello")
+        @marker.mark("hello")
         def mark3(self):
             self.m3 += 1
 
     obj = Marked()
 
-    for method in MethodMarker.make_callback_table(obj)["test"]:
+    for method in marker.make_callback_table(obj)["test"]:
         method()
-    for method in MethodMarker.make_callback_table(obj)["hello"]:
+    for method in marker.make_callback_table(obj)["hello"]:
         method()
 
     assert obj.m1 == 1
@@ -95,26 +102,26 @@ def test_multiple_marks():
     assert obj.m3 == 1
 
 
-def test_subclass_maintains_its_own_marks():
-    class MarkerSubclass(MethodMarker):
-        pass
+def test_each_instance_maintains_its_own_marks():
+    marker1 = MethodMarker()
+    marker2 = MethodMarker()
 
     class Marked:
         v1, v2 = 0, 0
 
-        @MarkerSubclass("test")
+        @marker1.mark("test")
         def test1(self):
             self.v1 += 1
 
-        @MethodMarker("test")
+        @marker2.mark("test")
         def test2(self):
             self.v2 += 1
 
     obj = Marked()
 
-    for method in MethodMarker.make_callback_table(obj)["test"]:
+    for method in marker1.make_callback_table(obj)["test"]:
         method()
-    for method in MarkerSubclass.make_callback_table(obj)["test"]:
+    for method in marker2.make_callback_table(obj)["test"]:
         method()
 
     assert obj.v1 == 1
