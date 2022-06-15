@@ -1,6 +1,6 @@
 import traceback
 
-from . import global_state
+from . import config
 
 _TB_NONE = traceback.format_exc()
 
@@ -32,7 +32,7 @@ class UnknownMessageError(PicklableException):
             self._error = error
         else:
             self._error = (
-                f"{global_state.config.context} sent an unknown communication:"
+                f"{config.local_context.name} sent an unknown communication:"
                 f"\n{message}"
             )
         self._message = message
@@ -40,7 +40,7 @@ class UnknownMessageError(PicklableException):
 
     def __reduce__(self):
         # important to reduce with _error included, otherwise
-        # global_state.config.context will end up being re-evaluated
+        # config.local_context.name will end up being re-evaluated
         # in the recieving process, causing an incorrect error message
         return (UnknownMessageError, (self._message, self._error))
 

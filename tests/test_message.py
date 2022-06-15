@@ -87,3 +87,17 @@ def test_dumping_and_loading_messages(message_type, fmt):
     assert reconstructed.id == msg.id
     assert reconstructed.field1 == msg.field1
     assert reconstructed.field2 == msg.field2
+
+
+@pytest.mark.parametrize(
+    "message_type",
+    (
+        (Task(fields="field1 field2", defaults=("testing1", "testing2"))),
+        (Event(fields="field1 field2", defaults=("testing1", "testing2"))),
+    ),
+)
+def test_message_with_default_values(message_type):
+    msg = message_type()
+
+    assert msg.field1 == "testing1"
+    assert msg.field2 == "testing2"

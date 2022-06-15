@@ -4,7 +4,7 @@ import heapq
 
 from collections import defaultdict
 
-from . import global_state
+from . import config
 
 
 class MethodMarker:
@@ -50,28 +50,6 @@ class MethodMarker:
         return table
 
 
-class MainloopThread(threading.Thread):
-    def __init__(self, *args, **kwargs):
-        self._running = False
-        super().__init__(*args, target=self._main, daemon=True, **kwargs)
-
-    def _main(self):
-        self._running = True
-        while self._running:
-            self.mainloop()
-            global_state.clock.tick(self)
-
-    def join(self, timeout=None):
-        self._running = False
-        super().join(timeout)
-
-    def kill(self):
-        self._running = False
-
-    def mainloop(self):
-        raise NotImplementedError()
-
-
 class Schedule:
     def __init__(self, interval_callbacks_pairs):
         self._timeouts = []
@@ -100,15 +78,50 @@ class Schedule:
 
 
 class Clock:
-    def __init__(self, interval=None):
+    def __init__(self, interval=None, context=None):
         self._consumers = dict()
-        self._interval = interval or global_state.config.poll_interval
+        self._context = context
+        self._interval = interval
 
     def tick(self, consumer):
+        interval = self._actual_interval
         if consumer not in self._consumers:
-            time.sleep(self._interval)
-            self._consumers[consumer] = time.time() + self._interval
+            time.sleep(interval)
+            self._consumers[consumer] = time.time() + interval
         else:
             next = self._consumers[consumer]
             time.sleep(max(0, next - time.time()))
-            self._consumers[consumer] = time.time() + self._interval
+            self._consumers[consumer] = time.time() + interval
+
+    @property
+    def _actual_interval(self):
+        if self._context is not None:
+            return self._context.poll_interval
+        if self._interval is None:
+            return config.local_context.poll_interval
+        return self._interval
+
+
+clock = Clock()
+
+
+class MainloopThread(threading.Thread):
+    def __init__(self, *args, **kwargs):
+        self._running = False
+        super().__init__(*args, target=self._main, daemon=True, **kwargs)
+
+    def _main(self):
+        self._running = True
+        while self._running:
+            self.mainloop()
+            clock.tick(self)
+
+    def join(self, timeout=None):
+        self._running = False
+        super().join(timeout)
+
+    def kill(self):
+        self._running = False
+
+    def mainloop(self):
+        raise NotImplementedError()

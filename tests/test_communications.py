@@ -14,20 +14,20 @@ from .conftest import (
 import mpcontroller as mpc
 
 from mpcontroller import ipc
-from mpcontroller import global_state
+from mpcontroller import config
 
 
-MAIN_CONTEXT = "testing-main"
-WORKER_CONTEXT = "testing-worker"
+MAIN_CONTEXT_NAME = "testing-main"
+WORKER_CONTEXT_NAME = "testing-worker"
 
-global_state.config.context = MAIN_CONTEXT
+config.local_context.name = MAIN_CONTEXT_NAME
 traceback.format_exc = lambda: ""
 
 
 def unknown_sent_from_worker(msg):
-    global_state.config.context = WORKER_CONTEXT
+    config.local_context.name = WORKER_CONTEXT_NAME
     exc = mpc.UnknownMessageError(msg)
-    global_state.config.context = MAIN_CONTEXT
+    config.local_context.name = MAIN_CONTEXT_NAME
     return exc
 
 
@@ -59,7 +59,7 @@ class IPCTestCase(mp.Process):
 
     def main(self):
         traceback.format_exc = lambda: ""
-        global_state.config.context = WORKER_CONTEXT
+        config.local_context.name = WORKER_CONTEXT_NAME
 
         self.manager.start(auto=True)
         while True:

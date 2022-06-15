@@ -8,8 +8,7 @@ import pytest
 import mpcontroller as mpc
 
 from mpcontroller import ipc
-from mpcontroller import global_state
-from mpcontroller import util
+from mpcontroller import config
 
 
 FAST_TIMEOUT = 3
@@ -18,8 +17,7 @@ if os.environ.get("CI", None):
 
 VERY_FAST_TIMEOUT = FAST_TIMEOUT / 100
 FAST_POLL = FAST_TIMEOUT / 10_000
-global_state.config.poll_interval = FAST_POLL
-global_state.clock = util.Clock(FAST_POLL)
+config.local_context.poll_interval = FAST_POLL
 
 
 class _MainThreadInterruption:

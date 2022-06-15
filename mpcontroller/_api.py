@@ -2,7 +2,7 @@ import multiprocessing as mp
 import atexit
 
 from . import exceptions
-from . import global_state
+from . import config
 from . import ipc
 from . import util
 from . import worker
@@ -10,7 +10,6 @@ from . import worker
 from .exceptions import PicklableException as Exception
 from .exceptions import UnknownMessageError
 from .exceptions import WorkerRuntimeError
-from .global_state import config
 from .ipc import Signal
 from .worker import Worker
 

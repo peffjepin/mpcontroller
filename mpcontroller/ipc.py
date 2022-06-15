@@ -6,7 +6,7 @@ import collections
 import multiprocessing as mp
 
 from . import exceptions
-from . import global_state
+from . import config
 from . import util
 
 
@@ -74,11 +74,13 @@ class Message:
         cls.typecodes = set()
         cls._idgen = _sequential_ids()
 
-    def __new__(cls, name="", fields=""):
+    def __new__(cls, name="", fields="", defaults=()):
         typecode = next(_typecode_gen)
         modified_fields = "typecode id " + fields
         modified_name = name or cls.__name__ + f"{typecode}"
-        base_factory = collections.namedtuple(modified_name, modified_fields)
+        base_factory = collections.namedtuple(
+            modified_name, modified_fields, defaults=defaults
+        )
         cls._class_lookup[typecode] = base_factory
         cls.typecodes.add(typecode)
 
@@ -414,7 +416,7 @@ def _process_messages(
     conn, on_task, on_exception_recieved=_raise, on_runtime_exception=_raise
 ):
     try:
-        while conn.poll(global_state.config.poll_timeout):
+        while conn.poll(config.local_context.poll_timeout):
             msg = conn.recv()
             if isinstance(msg, Exception):
                 on_exception_recieved(msg)

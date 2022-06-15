@@ -11,7 +11,7 @@ from .conftest import VERY_FAST_TIMEOUT
 from .conftest import FAST_TIMEOUT
 
 import mpcontroller as mpc
-from mpcontroller import global_state
+from mpcontroller import config
 
 
 class TimeTrackingWorker(mpc.Worker):
@@ -85,7 +85,7 @@ def test_teardown_still_executes_after_an_error_occurs():
     assert worker.teardowntime.value > 0
 
 
-class GlobalStateTestCase(mpc.Worker):
+class ContextCopiedToChildTestCase(mpc.Worker):
     expected = 1 / 1000
 
     def __init__(self):
@@ -93,22 +93,22 @@ class GlobalStateTestCase(mpc.Worker):
         super().__init__()
 
     def setup(self):
-        self.value.value = global_state.config.poll_interval
+        self.value.value = config.local_context.poll_interval
 
 
-def test_global_state_transfered_to_worker():
-    original = global_state.config.poll_interval
-    global_state.config.poll_interval = GlobalStateTestCase.expected
+def test_parent_context_values_are_copied_to_child_process():
+    original = config.local_context.poll_interval
+    config.local_context.poll_interval = ContextCopiedToChildTestCase.expected
 
     try:
-        worker = GlobalStateTestCase.spawn()
+        worker = ContextCopiedToChildTestCase.spawn()
 
         @happens_soon
         def value_is_set():
-            worker.value.value == GlobalStateTestCase.expected
+            worker.value.value == ContextCopiedToChildTestCase.expected
 
     finally:
-        global_state.config.poll_interval = original
+        config.local_context.poll_interval = original
 
 
 class LeadsToErrorTestCase(mpc.Worker):
