@@ -58,7 +58,11 @@ class _MainThreadInterruption:
         cls.expecting = None
 
 
-class ExampleTask(typing.NamedTuple):
+class ExampleTask(mpc.Task):
+    content: typing.Any = "testing"
+
+
+class ExampleEvent(mpc.Event):
     content: typing.Any = "testing"
 
 
@@ -67,6 +71,7 @@ class ExampleSignal(mpc.Signal):
 
 
 example_task = ExampleTask("testing")
+example_event = ExampleEvent("testing")
 
 
 class CommunicationManager(ipc.CommunicationManager):

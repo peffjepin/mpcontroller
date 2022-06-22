@@ -3,7 +3,7 @@ import traceback
 
 import pytest
 
-from .conftest import example_task
+from .conftest import example_task, example_event
 
 import mpcontroller as mpc
 
@@ -29,6 +29,8 @@ class ExampleException(mpc.Exception):
         ExampleException(1, 2),
         ExampleException(kwarg1=1, kwarg2=2),
         ExampleException(1, 2, kwarg1=1, kwarg2=2),
+        example_task,
+        example_event,
     ),
 )
 def test_pickle_dump_and_load(object_under_test):
