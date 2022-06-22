@@ -1,4 +1,5 @@
 import _thread
+import sys
 import typing
 import signal
 import traceback
@@ -64,94 +65,149 @@ def _sequential_ids():
 _typecode_gen = _sequential_ids()
 
 
-class Message:
-    _class_lookup = dict()
-
+class AnnotatedMessageMeta(typing.NamedTupleMeta):
     typecodes: set
-    _idgen: typing.Generator
+    namedtuple_lookup = dict()
 
-    def __init_subclass__(cls):
-        cls.typecodes = set()
-        cls._idgen = _sequential_ids()
-
-    def __new__(cls, name="", fields="", defaults=()):
+    def __new__(cls, typename, bases, ns):
         typecode = next(_typecode_gen)
-        modified_fields = "typecode id " + fields
-        modified_name = name or cls.__name__ + f"{typecode}"
-        base_factory = collections.namedtuple(
-            modified_name, modified_fields, defaults=defaults
-        )
-        cls._class_lookup[typecode] = base_factory
         cls.typecodes.add(typecode)
+        patched_ns = cls._patched_namespace(ns, typecode)
+        try:
+            bases = typing.NamedTuple.__mro_entries__((typing.NamedTuple,))
+        except AttributeError:
+            bases = (typing.NamedTuple,)
+        print(bases)
+        namedtuple = super().__new__(cls, typename, bases, patched_ns)
+        cls.namedtuple_lookup[typecode] = namedtuple
+        cls._patch_namedtuple(namedtuple, typecode)
+        return namedtuple
 
-        original_new = base_factory.__new__
+    def __instancecheck__(cls, obj):
+        try:
+            return isinstance(obj, tuple) and obj.typecode in cls.typecodes
+        except AttributeError:
+            return False
 
-        def __new__(nt_cls, *args, **kwargs):
-            nfields = len(nt_cls._fields)
+    @classmethod
+    def _patch_namedtuple(cls, namedtuple, typecode):
+        original_new = namedtuple.__new__
+        original_repr = namedtuple.__repr__
 
+        def __new__(patched_cls, *args, **kwargs):
+            nfields = len(patched_cls._fields)
             # when called with all params just construct normally
-            # this happens when deserializing a dumped message
+            # this happens when reconstructing a dumped message
             if len(args) == nfields or len(kwargs) == nfields:
-                return original_new(nt_cls, *args, **kwargs)
-
+                return original_new(patched_cls, *args, **kwargs)
             # otherwise we have to inject the additional fields that we have
             # added onto the class
             return original_new(
-                nt_cls,
-                nt_cls._typecode,
-                next(cls._idgen),
+                patched_cls,
+                next(patched_cls._idgen),
+                typecode,
                 *args,
                 **kwargs,
             )
-
-        __new__.__doc__ = original_new.__doc__
-        __new__.__qualname__ = original_new.__qualname__
-
-        original_repr = base_factory.__repr__
 
         def __repr__(self):
             return original_repr(self).replace(
                 f"typecode={self.typecode}, ", ""
             )
 
+        __new__.__doc__ = original_new.__doc__
+        __new__.__qualname__ = original_new.__qualname__
         __repr__.__doc__ = original_repr.__doc__
         __repr__.__qualname__ = original_repr.__qualname__
-
-        base_factory.__new__ = __new__
-        base_factory.__repr__ = __repr__
-        base_factory._typecode = typecode
-
-        return base_factory
+        namedtuple.__new__ = __new__
+        namedtuple.__repr__ = __repr__
 
     @classmethod
-    def dump(cls, msg, fmt):
-        if fmt is tuple:
-            return tuple(msg)
-        elif fmt is list:
-            return list(msg)
-        elif fmt is dict:
-            return msg._asdict()
-        else:
-            raise ValueError(
-                f"Expected fmt={fmt} to be in (tuple, list, dict)"
-            )
-
-    @classmethod
-    def load(cls, dump):
-        if isinstance(dump, dict):
-            namedtup = cls._class_lookup[dump["typecode"]]
-            return namedtup(**dump)
-        else:
-            namedtup = cls._class_lookup[dump[0]]
-            return namedtup(*dump)
+    def _patched_namespace(cls, ns, typecode):
+        annotations = ns.get("__annotations__", dict())
+        assert "id" not in annotations, "'id' field is reserved"
+        assert "typecode" not in annotations, "'typecode' field is reserved"
+        modified_annotations = {"id": int, "typecode": int, **annotations}
+        patched_ns = {k: v for k, v in ns.items() if k != "__annotations__"}
+        patched_ns["__annotations__"] = modified_annotations
+        patched_ns["_typecode"] = typecode
+        patched_ns["_idgen"] = _sequential_ids()
+        return patched_ns
 
 
-class Event(Message):
-    pass
+class EventMeta(AnnotatedMessageMeta):
+    typecodes = set()
 
 
-class Task(Message):
-    pass
+class TaskMeta(AnnotatedMessageMeta):
+    typecodes = set()
+
+
+Event = type.__new__(EventMeta, "Event", (), {})
+Task = type.__new__(TaskMeta, "Task", (), {})
+
+
+def event(typename, fields="", defaults=()):
+    module = sys._getframe(1).f_globals.get("__name__", "__main__")
+    return _functional_namedtuple_like_api(
+        msg_type=Event,
+        typename=typename,
+        fields=fields,
+        defaults=defaults,
+        module=module,
+    )
+
+
+def task(typename, fields="", defaults=()):
+    module = sys._getframe(1).f_globals.get("__name__", "__main__")
+    return _functional_namedtuple_like_api(
+        msg_type=Task,
+        typename=typename,
+        fields=fields,
+        defaults=defaults,
+        module=module,
+    )
+
+
+def _functional_namedtuple_like_api(
+    msg_type, typename, fields, defaults, module
+):
+    if isinstance(fields, str):
+        fields = [field.strip(",") for field in fields.split()]
+    annotations = {field: typing.Any for field in fields}
+    n_positional_only = len(fields) - len(defaults)
+    default_mapping = {
+        fields[n_positional_only + i]: default_value
+        for i, default_value in enumerate(defaults)
+    }
+    namespace = {
+        "__annotations__": annotations,
+        "__module__": module,
+        **default_mapping,
+    }
+    return type(typename, (msg_type,), namespace)
+
+
+def dump_message(msg, fmt):
+    if fmt is tuple:
+        return msg
+    elif fmt is list:
+        return list(msg)
+    elif fmt is dict:
+        return msg._asdict()
+    else:
+        raise ValueError(f"Expected fmt={fmt} to be in (tuple, list, dict)")
+
+
+def load_message(dump):
+    if isinstance(dump, dict):
+        namedtuple = AnnotatedMessageMeta.namedtuple_lookup[dump["typecode"]]
+        return namedtuple(**dump)
+    elif isinstance(dump, typing.Sequence):
+        namedtuple = AnnotatedMessageMeta.namedtuple_lookup[dump[1]]
+        return namedtuple(*dump)
+    else:
+        raise TypeError(f"dumped message type not recognized: {type(dump)!r}")
 
 
 class Signal:
