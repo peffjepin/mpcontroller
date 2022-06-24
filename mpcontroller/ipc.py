@@ -65,20 +65,30 @@ def _sequential_ids():
 _typecode_gen = _sequential_ids()
 
 
-class AnnotatedMessageMeta(typing.NamedTupleMeta):
+class AnnotatedMessageMeta(type):
     typecodes: set
     namedtuple_lookup = dict()
 
     def __new__(cls, typename, bases, ns):
         typecode = next(_typecode_gen)
         cls.typecodes.add(typecode)
-        patched_ns = cls._patched_namespace(ns, typecode)
-        try:
-            bases = typing.NamedTuple.__mro_entries__((typing.NamedTuple,))
-        except AttributeError:
-            bases = (typing.NamedTuple,)
-        print(bases)
-        namedtuple = super().__new__(cls, typename, bases, patched_ns)
+        annotations = ns.get("__annotations__", dict())
+        fields = ["id", "typecode"]
+        defaults = []
+        for k, _ in annotations.items():
+            fields.append(k)
+            try:
+                default = ns.get(k)
+                defaults.append(default)
+            except KeyError:
+                if defaults:
+                    raise ValueError(
+                        "Arguments without defaults should be listed "
+                        "before those with defaults"
+                    )
+        namedtuple = collections.namedtuple(
+            typename, fields, module=ns.get("__module__"), defaults=defaults
+        )
         cls.namedtuple_lookup[typecode] = namedtuple
         cls._patch_namedtuple(namedtuple, typecode)
         return namedtuple
@@ -121,18 +131,8 @@ class AnnotatedMessageMeta(typing.NamedTupleMeta):
         __repr__.__qualname__ = original_repr.__qualname__
         namedtuple.__new__ = __new__
         namedtuple.__repr__ = __repr__
-
-    @classmethod
-    def _patched_namespace(cls, ns, typecode):
-        annotations = ns.get("__annotations__", dict())
-        assert "id" not in annotations, "'id' field is reserved"
-        assert "typecode" not in annotations, "'typecode' field is reserved"
-        modified_annotations = {"id": int, "typecode": int, **annotations}
-        patched_ns = {k: v for k, v in ns.items() if k != "__annotations__"}
-        patched_ns["__annotations__"] = modified_annotations
-        patched_ns["_typecode"] = typecode
-        patched_ns["_idgen"] = _sequential_ids()
-        return patched_ns
+        namedtuple._typecode = typecode
+        namedtuple._idgen = _sequential_ids()
 
 
 class EventMeta(AnnotatedMessageMeta):

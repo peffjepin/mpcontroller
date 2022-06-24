@@ -49,6 +49,14 @@ message_types_with_field1_field2 = (
 
 
 @pytest.mark.parametrize("message_type", blank_message_types)
+def test_this_test_module_should_be_the_module(message_type):
+    class Blank:
+        pass
+
+    assert Blank.__module__ == message_type.__module__
+
+
+@pytest.mark.parametrize("message_type", blank_message_types)
 def test_ids_are_sequential(message_type):
     prev = 0
 
