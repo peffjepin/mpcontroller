@@ -149,7 +149,7 @@ class KnownTaskSentToWorker(LeadsToSuccessFlag):
 
     def __init__(self):
         manager = ipc.CommunicationManager(
-            worker_tasks={ExampleTask: [self.succeed]},
+            worker_messages={ExampleTask: [self.succeed]},
         )
         super().__init__(manager)
 
@@ -184,7 +184,7 @@ class KnownTaskSentToMain(LeadsToSuccessFlag):
 
     def __init__(self):
         manager = ipc.CommunicationManager(
-            main_tasks={ExampleTask: [self.handle_task]},
+            main_messages={ExampleTask: [self.handle_task]},
         )
         super().__init__(manager)
 
@@ -233,7 +233,7 @@ class ExceptionInMainTaskHandler(LeadsToError):
 
     def __init__(self):
         manager = ipc.CommunicationManager(
-            main_tasks={ExampleTask: [self.raises_error]},
+            main_messages={ExampleTask: [self.raises_error]},
         )
         super().__init__(manager)
 
@@ -269,7 +269,7 @@ class TasksHandledInOrder(LeadsToSuccessFlag):
 
     def __init__(self):
         manager = ipc.CommunicationManager(
-            worker_tasks={ExampleTask: [self.handle]},
+            worker_messages={ExampleTask: [self.handle]},
         )
         super().__init__(manager)
 
@@ -312,7 +312,7 @@ class TaskWithMultipleHandlers(LeadsToSuccessFlag):
 
     def __init__(self):
         manager = ipc.CommunicationManager(
-            main_tasks={ExampleTask: [self.handler1, self.handler2]}
+            main_messages={ExampleTask: [self.handler1, self.handler2]}
         )
         self.n = 0
         super().__init__(manager)

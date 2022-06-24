@@ -255,15 +255,15 @@ class TaskHandler:
 class CommunicationManager:
     def __init__(
         self,
-        worker_tasks=None,
+        worker_messages=None,
         worker_signals=None,
-        main_tasks=None,
+        main_messages=None,
         main_signals=None,
     ):
-        self._worker_tasks = worker_tasks or dict()
-        self._main_tasks = main_tasks or dict()
-        self._worker_signals = self._init_signals(worker_signals or dict())
+        self._main_messages = main_messages or dict()
         self._main_signals = self._init_signals(main_signals or dict())
+        self._worker_messages = worker_messages or dict()
+        self._worker_signals = self._init_signals(worker_signals or dict())
         self._auto = True
         self._in_child_process = False
         self._main_conn, self._worker_conn = mp.Pipe()
@@ -294,10 +294,11 @@ class CommunicationManager:
             self._local_signals.values(), self._on_runtime_exception
         )
         _process_messages(
-            self._local_conn,
-            self._on_task_recieved,
-            self._on_exception_recieved,
-            self._on_runtime_exception,
+            conn=self._local_conn,
+            on_task=self._on_task_recieved,
+            on_event=self._on_event_recieved,
+            on_exception_recieved=self._on_exception_recieved,
+            on_runtime_exception=self._on_runtime_exception,
         )
 
     def send(self, msg):
@@ -308,7 +309,7 @@ class CommunicationManager:
                 raise msg
             self._local_conn.send(msg)
         else:
-            self._send_task(msg)
+            self._send_message(msg)
 
     def flush_inbound_communication(self):
         def on_runtime_exception(exc):
@@ -333,11 +334,11 @@ class CommunicationManager:
         }
         return initialized
 
-    def _send_task(self, task):
-        if type(task) in self._foreign_tasks:
-            self._local_conn.send(task)
+    def _send_message(self, message):
+        if type(message) in self._foreign_messages:
+            self._local_conn.send(message)
         else:
-            self._handle_unknown_message(task)
+            self._handle_unknown_message(message)
 
     def _handle_unknown_message(self, msg):
         exception = exceptions.UnknownMessageError(msg)
@@ -370,11 +371,11 @@ class CommunicationManager:
     @property
     def _on_task_recieved(self):
         def main_implementation(task):
-            handlers = self._local_tasks[type(task)]
-            _complete_task(task, handlers, self._on_runtime_exception)
+            handlers = self._local_messages[type(task)]
+            _handle_message(task, handlers, self._on_runtime_exception)
 
         def worker_implementation(task):
-            handlers = self._local_tasks[type(task)]
+            handlers = self._local_messages[type(task)]
             self.taskq.append(TaskHandler(task, handlers))
 
         return (
@@ -382,6 +383,10 @@ class CommunicationManager:
             if self._in_child_process
             else main_implementation
         )
+
+    def _on_event_recieved(self, event):
+        handlers = self._local_messages[type(event)]
+        _handle_message(event, handlers, self._on_runtime_exception)
 
     @property
     def _on_exception_recieved(self):
@@ -422,9 +427,11 @@ class CommunicationManager:
         return self._worker_conn if self._in_child_process else self._main_conn
 
     @property
-    def _local_tasks(self):
+    def _local_messages(self):
         return (
-            self._worker_tasks if self._in_child_process else self._main_tasks
+            self._worker_messages
+            if self._in_child_process
+            else self._main_messages
         )
 
     @property
@@ -436,9 +443,11 @@ class CommunicationManager:
         )
 
     @property
-    def _foreign_tasks(self):
+    def _foreign_messages(self):
         return (
-            self._main_tasks if self._in_child_process else self._worker_tasks
+            self._main_messages
+            if self._in_child_process
+            else self._worker_messages
         )
 
     @property
@@ -471,15 +480,24 @@ def _raise(exc):
 
 
 def _process_messages(
-    conn, on_task, on_exception_recieved=_raise, on_runtime_exception=_raise
+    conn,
+    on_task,
+    on_event,
+    on_exception_recieved=_raise,
+    on_runtime_exception=_raise,
 ):
     try:
         while conn.poll(config.local_context.poll_timeout):
             msg = conn.recv()
             if isinstance(msg, Exception):
                 on_exception_recieved(msg)
-            else:
+            elif isinstance(msg, Task):
                 on_task(msg)
+            elif isinstance(msg, Event):
+                on_event(msg)
+            else:
+                exc = TypeError("Unrecognized message: {msg!r}")
+                on_runtime_exception(exc)
     except Exception as exc:
         on_runtime_exception(exc)
 
@@ -492,9 +510,9 @@ def _process_signals(signals, on_runtime_exception=_raise):
         on_runtime_exception(exc)
 
 
-def _complete_task(task, handlers, on_runtime_exception=_raise):
+def _handle_message(msg, handlers, on_runtime_exception=_raise):
     try:
         for handler in handlers:
-            handler(task)
+            handler(msg)
     except Exception as exc:
         on_runtime_exception(exc)

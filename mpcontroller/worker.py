@@ -8,11 +8,11 @@ from . import exceptions
 from . import config
 
 
-main_task_marker = util.MethodMarker()
+main_message_marker = util.MethodMarker()
 main_signal_marker = util.MethodMarker()
 main_schedule_marker = util.MethodMarker()
 
-worker_task_marker = util.MethodMarker()
+worker_message_marker = util.MethodMarker()
 worker_signal_marker = util.MethodMarker()
 worker_schedule_marker = util.MethodMarker()
 
@@ -59,18 +59,18 @@ class _HandlerNamespace(_DecoratorNamespace):
             if issubclass(key, ipc.Signal):
                 return worker_signal_marker.mark(key)
         except Exception:
-            return worker_task_marker.mark(key)
+            return worker_message_marker.mark(key)
         else:
-            return worker_task_marker.mark(key)
+            return worker_message_marker.mark(key)
 
     def main(self, key):
         try:
             if issubclass(key, ipc.Signal):
                 return main_signal_marker.mark(key)
         except Exception:
-            return main_task_marker.mark(key)
+            return main_message_marker.mark(key)
         else:
-            return main_task_marker.mark(key)
+            return main_message_marker.mark(key)
 
 
 schedule_namespace = _ScheduleNamespace()
@@ -142,8 +142,8 @@ class Worker:
     def __init__(self):
         self._process = _WorkerProcess(self)
         self._manager = ipc.CommunicationManager(
-            main_tasks=main_task_marker.make_callback_table(self),
-            worker_tasks=worker_task_marker.make_callback_table(self),
+            main_messages=main_message_marker.make_callback_table(self),
+            worker_messages=worker_message_marker.make_callback_table(self),
             main_signals=main_signal_marker.make_callback_table(self),
             worker_signals=worker_signal_marker.make_callback_table(self),
         )

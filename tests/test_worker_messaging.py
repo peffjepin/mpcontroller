@@ -5,11 +5,14 @@ import pytest
 from .conftest import Worker
 from .conftest import ExampleSignal
 from .conftest import ExampleTask
+from .conftest import ExampleEvent
 from .conftest import RecordedCallback
 from .conftest import doesnt_happen
 from .conftest import example_task
+from .conftest import example_event
 from .conftest import happens_soon
 from .conftest import VERY_FAST_TIMEOUT
+from .conftest import FAST_TIMEOUT
 
 import mpcontroller as mpc
 
@@ -89,7 +92,7 @@ def test_worker_handles_all_tasks_before_joining():
             worker.record.nth(i).assert_called_with(example_tasks[i])
 
 
-def test_worker_tasks_dont_block_mainloop():
+def test_worker_mainloop_does_not_block_tasks():
     worker = BlockedEcho.spawn()
 
     time.sleep(VERY_FAST_TIMEOUT / 10)
@@ -98,6 +101,16 @@ def test_worker_tasks_dont_block_mainloop():
     @happens_soon
     def response_received():
         worker.record.called
+
+
+def test_worker_tasks_dont_block_events():
+    worker = BlockingTaskDoesNotBlockEvents.spawn()
+    worker.send(example_task)
+    worker.send(example_event)
+
+    @happens_soon
+    def response_recieved():
+        worker.record.assert_called_with(example_event)
 
 
 def test_helpful_exception_when_worker_or_main_handler_not_chosen():
@@ -203,8 +216,22 @@ class SlowEcho(Echo):
 
 
 class BlockedEcho(Echo):
-    def main(self):
+    def mainloop(self):
         time.sleep(VERY_FAST_TIMEOUT)
+
+
+class BlockingTaskDoesNotBlockEvents(RecordedWorker):
+    @mpc.handler.worker(ExampleTask)
+    def block(self, task):
+        time.sleep(FAST_TIMEOUT * 3)
+
+    @mpc.handler.worker(ExampleEvent)
+    def echo(self, event):
+        self.send(event)
+
+    @mpc.handler.main(ExampleEvent)
+    def record_event(self, event):
+        self.record(event)
 
 
 class EchoNew(Worker):
