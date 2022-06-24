@@ -134,7 +134,7 @@ class AnnotatedMessageMeta(type):
         namedtuple.__new__ = __new__
         namedtuple.__repr__ = __repr__
         namedtuple._typecode = typecode
-        namedtuple._idgen = _sequential_ids()
+        namedtuple._idgen = config.SharedCounter(f"Message_{typecode}")
 
 
 class EventMeta(AnnotatedMessageMeta):

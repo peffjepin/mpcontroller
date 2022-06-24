@@ -150,6 +150,18 @@ def test_handles_communication_only_on_recv_when_not_auto(communication):
         worker.record.assert_called_with(communication)
 
 
+def test_message_ids_are_unique_across_process_boundaries():
+    worker = EchoNew.spawn()
+    sending = [ExampleTask() for _ in range(3)]
+    for task in sending:
+        worker.send(task)
+
+    @happens_soon
+    def we_should_have_6_tasks_all_with_unique_ids():
+        seen = set(t.id for t in sending + worker.record)
+        assert len(seen) == 6
+
+
 class RecordedWorker(Worker):
     def __init__(self, *args, **kwargs):
         self.record = RecordedCallback()
@@ -193,3 +205,18 @@ class SlowEcho(Echo):
 class BlockedEcho(Echo):
     def main(self):
         time.sleep(VERY_FAST_TIMEOUT)
+
+
+class EchoNew(Worker):
+    def __init__(self, *args, **kwargs):
+        self.record = []
+        super().__init__(*args, **kwargs)
+
+    @mpc.handler.worker(ExampleTask)
+    def echo_new_task(self, task):
+        new_task = ExampleTask()
+        self.send(new_task)
+
+    @mpc.handler.main(ExampleTask)
+    def record_echo(self, task):
+        self.record.append(task)
