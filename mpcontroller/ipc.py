@@ -76,6 +76,8 @@ class AnnotatedMessageMeta(type):
         fields = ["id", "typecode"]
         defaults = []
         for k, _ in annotations.items():
+            assert k != "id", "'id' field is reserved"
+            assert k != "typecode", "'typecode' field is reserved"
             fields.append(k)
             try:
                 default = ns.get(k)
