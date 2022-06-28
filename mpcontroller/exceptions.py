@@ -62,7 +62,9 @@ class WorkerRuntimeError(PicklableException):
         return "WorkerRuntimeError:\n" + str(self)
 
     def __eq__(self, other):
-        return str(self) == str(other)
+        return isinstance(other, WorkerRuntimeError) and str(self.exc) == str(
+            other.exc
+        )
 
     def __reduce__(self):
         return (WorkerRuntimeError, (self.exc, self.tb))

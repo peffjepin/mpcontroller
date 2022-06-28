@@ -123,22 +123,34 @@ class ActiveWorkers:
 class _WorkerProcess(mp.Process):
     def __init__(self, worker):
         self.worker = worker
+        self._exitcode = 0
         self._parent_context = config.local_context
         super().__init__(target=self._main)
 
     def _main(self):
         config.local_context = self._parent_context
         config.local_context.name = str(self.worker)
-        self.worker.child_runtime_setup()
-        self.worker.child_runtime_main()
-        self.worker.child_runtime_teardown()
+        try:
+            self.worker.child_runtime_setup()
+            self.worker.child_runtime_main()
+        except Exception as exc:
+            self._exitcode = 1
+            self.worker.send(exceptions.WorkerRuntimeError(exc))
+        finally:
+            self._teardown()
+
+    def _teardown(self):
+        try:
+            self.worker.child_runtime_teardown()
+        except Exception as exc:
+            if self._exitcode == 0:
+                self.worker.send(exceptions.WorkerRuntimeError(exc))
+            self._exitcode = 2
+        finally:
+            raise SystemExit(self._exitcode)
 
 
 class Worker:
-    ERROR_IN_SETUP_EXITCODE = 1
-    ERROR_IN_MAIN_EXITCODE = 2
-    ERROR_IN_TEARDOWN_EXITCODE = 3
-
     def __init__(self):
         self._process = _WorkerProcess(self)
         self._manager = ipc.CommunicationManager(
@@ -220,46 +232,31 @@ class Worker:
         ActiveWorkers.notify_worker_terminated(self)
 
     def child_runtime_setup(self):
-        try:
-            self._running = True
-            self._manager.start()
-            self._taskthread = _TaskThread(
-                taskq=self._manager.taskq,
-                on_idle=self._set_idle,
-                on_busy=self._set_busy,
-            )
-            self._taskthread.start()
-            self._init_schedule(worker_schedule_marker)
-            self.setup()
-        except Exception as exc:
-            self.send(exceptions.WorkerRuntimeError(exc))
-            self.child_runtime_teardown(exitcode=self.ERROR_IN_SETUP_EXITCODE)
+        self._running = True
+        self._manager.start()
+        self._taskthread = _TaskThread(
+            taskq=self._manager.taskq,
+            on_idle=self._set_idle,
+            on_busy=self._set_busy,
+        )
+        self._taskthread.start()
+        self._init_schedule(worker_schedule_marker)
+        self.setup()
 
     def child_runtime_main(self):
-        try:
-            while self._running:
-                self.mainloop()
-                if self._schedule:
-                    self._schedule.update()
-                util.clock.tick(self)
-        except Exception as exc:
-            self.send(exceptions.WorkerRuntimeError(exc))
-            self.child_runtime_teardown(exitcode=self.ERROR_IN_MAIN_EXITCODE)
+        while self._running:
+            self.mainloop()
+            if self._schedule:
+                self._schedule.update()
+            util.clock.tick(self)
 
     def child_runtime_teardown(self, exitcode=0):
-        try:
-            self._running = False
-            self._manager.join()
-            self._taskthread.join()
-            self._flush_incoming_communication()
-            self.teardown()
-            self.status = WorkerStatus.DEAD
-        except Exception as exc:
-            if exitcode == 0:
-                self.send(exceptions.WorkerRuntimeError(exc))
-                exitcode = self.ERROR_IN_TEARDOWN_EXITCODE
-        finally:
-            raise SystemExit(exitcode)
+        self._running = False
+        self._manager.join()
+        self._taskthread.join()
+        self._flush_incoming_communication()
+        self.teardown()
+        self.status = WorkerStatus.DEAD
 
     def _init_schedule(self, markers):
         scheduled_tasks = markers.make_callback_table(self)

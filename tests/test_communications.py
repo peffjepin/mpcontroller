@@ -58,18 +58,21 @@ class IPCTestCase(mp.Process):
         super().__init__(target=self.main)
 
     def main(self):
-        traceback.format_exc = lambda: ""
-        config.local_context.name = WORKER_CONTEXT_NAME
+        try:
+            traceback.format_exc = lambda: ""
+            config.local_context.name = WORKER_CONTEXT_NAME
 
-        self.manager.start(auto=True)
-        while True:
-            try:
-                if self._shared_trigger.value == 1:
-                    self._shared_trigger.value = 2
-                    self.process_trigger()
-                self.check_process_state()
-            except Exception as exc:
-                self.exception = exc
+            self.manager.start(auto=True)
+            while True:
+                try:
+                    if self._shared_trigger.value == 1:
+                        self._shared_trigger.value = 2
+                        self.process_trigger()
+                    self.check_process_state()
+                except Exception as exc:
+                    self.exception = exc
+        except Exception as exc:
+            self.manager.send(exc)
 
     def trigger(self):
         self.local_trigger()
@@ -113,7 +116,7 @@ class LeadsToSuccessFlag(IPCTestCase):
 
 class UnknownTaskSentToWorker(ErrorImmediately):
     task = ExampleTask()
-    expected = unknown_sent_from_main(task)
+    exc = unknown_sent_from_main(task)
 
     def local_trigger(self):
         self.manager.send(self.task)
@@ -121,21 +124,21 @@ class UnknownTaskSentToWorker(ErrorImmediately):
 
 class UnknownTaskSentToMain(LeadsToError):
     task = ExampleTask()
-    expected = unknown_sent_from_worker(task)
+    exc = unknown_sent_from_worker(task)
 
     def process_trigger(self):
         self.manager.send(self.task)
 
 
 class UnknownSignalSentToWorker(ErrorImmediately):
-    expected = unknown_sent_from_main(ExampleSignal)
+    exc = unknown_sent_from_main(ExampleSignal)
 
     def local_trigger(self):
         self.manager.send(ExampleSignal)
 
 
 class UnknownSignalSentToMain(LeadsToError):
-    expected = unknown_sent_from_worker(ExampleSignal)
+    exc = unknown_sent_from_worker(ExampleSignal)
 
     def process_trigger(self):
         self.manager.send(ExampleSignal)
@@ -208,7 +211,6 @@ class KnownSignalSentToMain(LeadsToSuccessFlag):
 
 class ExceptionInWorkerSignalHandler(LeadsToError):
     exc = mpc.Exception("testing")
-    expected = mpc.WorkerRuntimeError(exc)
 
     def local_trigger(self):
         self.manager.send(ExampleSignal)
@@ -226,7 +228,6 @@ class ExceptionInWorkerSignalHandler(LeadsToError):
 
 class ExceptionInMainTaskHandler(LeadsToError):
     exc = mpc.Exception("testing")
-    expected = mpc.WorkerRuntimeError(exc)
 
     def process_trigger(self):
         self.manager.send(ExampleTask())
@@ -243,7 +244,6 @@ class ExceptionInMainTaskHandler(LeadsToError):
 
 class ExceptionInMainSignalHandler(LeadsToError):
     exc = mpc.Exception("testing")
-    expected = mpc.WorkerRuntimeError(exc)
 
     def process_trigger(self):
         self.manager.send(ExampleSignal)
@@ -335,10 +335,10 @@ def test_error_immediately_implementation(case, auto):
     p.start()
     p.manager.start(auto=auto)
 
-    with pytest.raises(type(p.expected)) as excinfo:
+    with pytest.raises(type(p.exc)) as excinfo:
         p.trigger()
 
-    assert excinfo.value == p.expected
+    assert excinfo.value == p.exc
 
 
 @pytest.mark.parametrize("case", LeadsToError.__subclasses__())
@@ -351,13 +351,13 @@ def test_leads_to_error_implementation(case, auto):
     if not auto:
         p.trigger()
 
-        @exception_soon_repeat(p.expected)
+        @exception_soon_repeat(p.exc)
         def cause():
             p.manager.recv()
 
     else:
 
-        @exception_soon(p.expected)
+        @exception_soon(p.exc)
         def cause():
             p.trigger()
 

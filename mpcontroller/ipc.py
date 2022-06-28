@@ -276,7 +276,6 @@ class CommunicationManager:
 
         if self._in_child_process:
             self.taskq = collections.deque()
-            MainThreadInterruption.handler = self._worker_interrupt_handler
         if auto:
             self._start_communication_thread()
 
@@ -359,14 +358,6 @@ class CommunicationManager:
     def _start_communication_thread(self):
         self._communication_thread = CommunicationPollingThread(self)
         self._communication_thread.start()
-
-    def _worker_interrupt_handler(self, exc):
-        # this is executed in the child process when the main thread is
-        # interrupted from a daemon thread.
-
-        exception = exceptions.WorkerRuntimeError(exc, traceback.format_exc())
-        self.send(exception)
-        raise exc
 
     @property
     def _on_task_recieved(self):
