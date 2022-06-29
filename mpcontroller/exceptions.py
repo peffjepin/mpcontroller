@@ -58,9 +58,6 @@ class WorkerRuntimeError(PicklableException):
     def __str__(self):
         return str(self.tb) if self.tb else str(self.exc)
 
-    def __repr__(self):
-        return "WorkerRuntimeError:\n" + str(self)
-
     def __eq__(self, other):
         return isinstance(other, WorkerRuntimeError) and str(self.exc) == str(
             other.exc
