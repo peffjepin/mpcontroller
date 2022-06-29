@@ -53,7 +53,6 @@ class IPCTestCase(mp.Process):
         self.manager = manager or ipc.CommunicationManager()
         self._success = mp.Value("i", 0)
         self._shared_trigger = mp.Value("i", 0)
-        self.exception = None
         self.processes.append(self)
         super().__init__(target=self.main)
 
@@ -64,13 +63,10 @@ class IPCTestCase(mp.Process):
 
             self.manager.start(auto=True)
             while True:
-                try:
-                    if self._shared_trigger.value == 1:
-                        self._shared_trigger.value = 2
-                        self.process_trigger()
-                    self.check_process_state()
-                except Exception as exc:
-                    self.exception = exc
+                if self._shared_trigger.value == 1:
+                    self._shared_trigger.value = 2
+                    self.process_trigger()
+                self.check_process_state()
         except Exception as exc:
             self.manager.send(exc)
 

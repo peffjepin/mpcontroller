@@ -20,42 +20,39 @@ FAST_POLL = FAST_TIMEOUT / 10_000
 config.local_context.poll_interval = FAST_POLL
 
 
-class _MainThreadInterruption:
-    _exception = None
-    expecting = False
+def dummy_fn(*args, **kwargs):
+    pass
 
-    @classmethod
-    def handler(cls, exc):
-        # if we're not expecting a mainthread interrupt raise the exception
-        if not cls.expecting:
-            raise exc
-        # else just set it as the exception value for use elsewhere
-        cls.set_exception(exc)
 
-    @classmethod
-    def consume_exception(cls):
-        if cls._exception is None:
-            return
-        else:
-            exc = cls._exception
-            cls._exception = None
-            return exc
+def _raise(exc):
+    raise exc
 
-    @classmethod
-    def set_exception(cls, exc):
-        if cls._exception is None:
-            cls._exception = exc
-        else:
-            raise Exception(
-                "main thread was interrupted again before a previous"
-                f"interruption could be handled...\nprev: {cls._exception!r}"
-                f"\nnew: {exc!r}"
-            )
 
-    @classmethod
-    def clear(cls):
-        cls._exception = None
-        cls.expecting = None
+ipc.MainThreadInterruption.handler = dummy_fn
+
+
+class _MainThreadInterruptionCapture:
+    def __init__(self):
+        self.exception = None
+
+    def begin_capture(self):
+        ipc.MainThreadInterruption.handler = _raise
+
+    def end_capture(self):
+        ipc.MainThreadInterruption.handler = dummy_fn
+
+    def capture_exception(self, exc):
+        self.exception = exc
+
+
+@pytest.fixture(autouse=True, scope="function")
+def _testing_environment():
+    exccap = _MainThreadInterruptionCapture()
+    exccap.begin_capture()
+    yield
+    exccap.end_capture()
+    CommunicationManager.cleanup()
+    mpc.kill_all()
 
 
 class ExampleTask(mpc.Task):
@@ -101,16 +98,6 @@ class BlankWorker(Worker):
 def _patch_test_environment():
     mpc.Worker = Worker
     ipc.CommunicationManager = CommunicationManager
-    ipc.MainThreadInterruption.handler = _MainThreadInterruption.handler
-
-
-@pytest.fixture(autouse=True, scope="function")
-def _per_test_cleanup():
-    yield
-
-    _MainThreadInterruption.clear()
-    CommunicationManager.cleanup()
-    mpc.kill_all()
 
 
 def _succeeds_before_timeout(fn, timeout):
@@ -163,43 +150,38 @@ def doesnt_happen(fn):
 
 
 def exception_soon(expected_exception):
-    # expecting an exception to interrupt the main thread from a daemon
-    # expected_exception will be compared with __eq__
     def inner(fn):
+        deadline = time.time() + FAST_TIMEOUT
         try:
-            _MainThreadInterruption.expecting = True
             fn()
-            deadline = time.time() + FAST_TIMEOUT
-
             while time.time() < deadline:
-                exc = _MainThreadInterruption.consume_exception()
-                if exc:
-                    # some debug output in case of failure
-                    print("caught an exception: ", repr(exc))
-                if exc == expected_exception:
-                    return
-                elif exc is not None:
-                    print(f"expected: {expected_exception!r}")
-                    raise exc
-            raise AssertionError(f"never caught {expected_exception!r}")
-        finally:
-            _MainThreadInterruption.clear()
+                pass
+            raise TimeoutError(f"{expected_exception!r} never raised")
+        except Exception as exc:
+            if exc == expected_exception:
+                return
+            else:
+                print("Got unexpected exception")
+                raise exc
 
     return inner
 
 
-def exception_soon_repeat(exc):
-    def inner(fn):
-        # like exception soon but this exception will be raised directly
-        # in the main process soon as a result of calling this function
-        deadline = time.time() + FAST_TIMEOUT
-        while time.time() < deadline:
-            try:
-                fn()
-            except Exception as actual:
-                assert exc == actual
+def exception_soon_repeat(expected_exception):
+    def inner(fn, deadline=None):
+        deadline = deadline or time.time() + FAST_TIMEOUT
+        if time.time() > deadline:
+            raise TimeoutError(f"{expected_exception!r} never raised")
+        try:
+            fn()
+        except Exception as exc:
+            if exc == expected_exception:
                 return
-        raise AssertionError(f"never caught {exc!r}")
+            else:
+                print("Got unexpected exception")
+                raise exc
+        else:
+            inner(fn, deadline)
 
     return inner
 
