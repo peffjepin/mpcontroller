@@ -12,9 +12,9 @@ import mpcontroller as mpc
 
 class Tester(mpc.Worker):
     def mainloop(self):
-        exitcode = os.system("pytest -x --full-trace")
+        exitcode = os.system("pytest -x")
         if exitcode != 0:
-            raise Exception("vroom")
+            exit()
 
 
 def main():
@@ -26,12 +26,11 @@ def main():
         type=int,
     )
     args = parser.parse_args()
-
-    for _ in range(args.n):
-        Tester.spawn()
-
-    while True:
+    testers = [Tester.spawn() for _ in range(args.n)]
+    while all(t.status != mpc.DEAD for t in testers):
         pass
+    mpc.kill_all()
+    return 0
 
 
 if __name__ == "__main__":

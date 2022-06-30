@@ -2,7 +2,6 @@ import _thread
 import sys
 import typing
 import signal
-import traceback
 import collections
 import multiprocessing as mp
 

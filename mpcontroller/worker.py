@@ -202,6 +202,7 @@ class Worker:
 
     def start(self, auto=True):
         self._running = True
+        self.status = WorkerStatus.INIT
         self._process.start()
         self._manager.start(auto=auto)
 
