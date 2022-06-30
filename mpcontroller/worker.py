@@ -302,10 +302,10 @@ class _TaskThread(util.MainloopThread):
     def idle(self, value):
         if self._idle and not value:
             self._idle = False
-            self.on_idle()
+            self.on_busy()
         elif not self._idle and value:
             self._idle = True
-            self.on_busy()
+            self.on_idle()
 
     def mainloop(self):
         if not self.taskq:
