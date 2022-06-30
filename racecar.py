@@ -14,6 +14,7 @@ class Tester(mpc.Worker):
     def mainloop(self):
         exitcode = os.system("pytest -x")
         if exitcode != 0:
+            self.status = mpc.DEAD
             exit()
 
 
