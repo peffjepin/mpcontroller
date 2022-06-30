@@ -41,7 +41,9 @@ def _kill_remaining_processes():
     yield
     while IPCTestCase.processes:
         try:
-            IPCTestCase.processes.pop().kill()
+            p = IPCTestCase.processes.pop()
+            p.manager.join()
+            p.kill()
         except Exception:
             pass
 
@@ -54,10 +56,16 @@ class IPCTestCase(mp.Process):
         self._success = mp.Value("i", 0)
         self._shared_trigger = mp.Value("i", 0)
         self.processes.append(self)
+        self.triggered = False
         super().__init__(target=self.main)
+
+    def _main_thread_interuption(self, exc):
+        self.manager.send(exc)
+        raise SystemExit(1)
 
     def main(self):
         try:
+            ipc.MainThreadInterruption.handler = self._main_thread_interuption
             traceback.format_exc = lambda: ""
             config.local_context.name = WORKER_CONTEXT_NAME
 
@@ -71,8 +79,10 @@ class IPCTestCase(mp.Process):
             self.manager.send(exc)
 
     def trigger(self):
-        self.local_trigger()
-        self._process_trigger()
+        if not self.triggered:
+            self.local_trigger()
+            self._process_trigger()
+            self.triggered = True
 
     @property
     def success(self):

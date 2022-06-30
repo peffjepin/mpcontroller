@@ -264,6 +264,7 @@ class CommunicationManager:
         self._worker_messages = worker_messages or dict()
         self._worker_signals = self._init_signals(worker_signals or dict())
         self._auto = True
+        self._running = False
         self._in_child_process = False
         self._main_conn, self._worker_conn = mp.Pipe()
         self._pipe_thread = None
@@ -271,6 +272,7 @@ class CommunicationManager:
 
     def start(self, *, auto=True):
         self._auto = auto
+        self._running = True
         self._in_child_process = mp.current_process().name != "MainProcess"
 
         if self._in_child_process:
@@ -281,11 +283,13 @@ class CommunicationManager:
     def join(self, timeout=None):
         if self._auto:
             self._communication_thread.join(timeout)
+        self._running = False
 
     def kill(self):
         if self._auto and self._pipe_thread:
             self._pipe_thread.kill()
             self._signal_thread.kill()
+        self._running = False
 
     def recv(self):
         _process_signals(
@@ -381,13 +385,14 @@ class CommunicationManager:
     @property
     def _on_exception_recieved(self):
         def main_implementation(exc):
-            if self._auto:
+            if self._auto and self._running:
                 MainThreadInterruption.interrupt_main(exc)
             else:
                 raise exc
 
         def worker_implementation(exc):
-            MainThreadInterruption.interrupt_main(exc)
+            if self._running:
+                MainThreadInterruption.interrupt_main(exc)
 
         return (
             worker_implementation
@@ -398,13 +403,14 @@ class CommunicationManager:
     @property
     def _on_runtime_exception(self):
         def main_implementation(exc):
-            if self._auto:
+            if self._auto and self._running:
                 MainThreadInterruption.interrupt_main(exc)
             else:
                 raise exc
 
         def worker_implementation(exc):
-            MainThreadInterruption.interrupt_main(exc)
+            if self._running:
+                MainThreadInterruption.interrupt_main(exc)
 
         return (
             worker_implementation

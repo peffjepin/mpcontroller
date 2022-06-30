@@ -20,37 +20,32 @@ FAST_POLL = FAST_TIMEOUT / 10_000
 config.local_context.poll_interval = FAST_POLL
 
 
-def dummy_fn(*args, **kwargs):
-    pass
-
-
-def _raise(exc):
-    raise exc
-
-
-ipc.MainThreadInterruption.handler = dummy_fn
-
-
 class _MainThreadInterruptionCapture:
-    def __init__(self):
-        self.exception = None
+    exception = None
 
-    def begin_capture(self):
-        ipc.MainThreadInterruption.handler = _raise
+    @classmethod
+    def capture(cls, exc):
+        if isinstance(exc, KeyboardInterrupt):
+            raise exc
+        cls.exception = exc
 
-    def end_capture(self):
-        ipc.MainThreadInterruption.handler = dummy_fn
+    @classmethod
+    def check(cls):
+        if cls.exception:
+            raise cls.exception
 
-    def capture_exception(self, exc):
-        self.exception = exc
+    @classmethod
+    def clear(cls):
+        cls.exception = None
+
+
+ipc.MainThreadInterruption.handler = _MainThreadInterruptionCapture.capture
 
 
 @pytest.fixture(autouse=True, scope="function")
 def _testing_environment():
-    exccap = _MainThreadInterruptionCapture()
-    exccap.begin_capture()
     yield
-    exccap.end_capture()
+    _MainThreadInterruptionCapture.clear()
     CommunicationManager.cleanup()
     mpc.kill_all()
 
@@ -95,7 +90,7 @@ class BlankWorker(Worker):
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _patch_test_environment():
+def _patch_test_session():
     mpc.Worker = Worker
     ipc.CommunicationManager = CommunicationManager
 
@@ -106,8 +101,6 @@ def _succeeds_before_timeout(fn, timeout):
     while True:
         try:
             fn()
-        except mpc.WorkerRuntimeError as exc:
-            raise exc
         except Exception as exc:
             if time.time() < deadline:
                 continue
@@ -123,8 +116,6 @@ def _doesnt_succeed_before_timeout(fn, timeout):
     while True:
         try:
             fn()
-        except mpc.WorkerRuntimeError as exc:
-            raise exc
         except Exception:
             if time.time() < deadline:
                 continue
@@ -155,13 +146,15 @@ def exception_soon(expected_exception):
         try:
             fn()
             while time.time() < deadline:
-                pass
+                _MainThreadInterruptionCapture.check()
             raise TimeoutError(f"{expected_exception!r} never raised")
+        except TimeoutError as exc:
+            raise exc
         except Exception as exc:
             if exc == expected_exception:
                 return
             else:
-                print("Got unexpected exception")
+                print(f"Got unexpected exception: {exc!r}")
                 raise exc
 
     return inner
@@ -174,11 +167,14 @@ def exception_soon_repeat(expected_exception):
             raise TimeoutError(f"{expected_exception!r} never raised")
         try:
             fn()
+            _MainThreadInterruptionCapture.check()
+        except TimeoutError as exc:
+            raise exc
         except Exception as exc:
             if exc == expected_exception:
                 return
             else:
-                print("Got unexpected exception")
+                print(f"Got unexpected exception: {exc!r}")
                 raise exc
         else:
             inner(fn, deadline)
