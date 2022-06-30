@@ -273,7 +273,9 @@ class CommunicationManager:
     def start(self, *, auto=True):
         self._auto = auto
         self._running = True
-        self._in_child_process = mp.current_process().name != "MainProcess"
+        self._in_child_process = (
+            mp.current_process().name != config.MAIN_PROCESS
+        )
 
         if self._in_child_process:
             self.taskq = collections.deque()

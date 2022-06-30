@@ -2,9 +2,12 @@ import multiprocessing as mp
 from dataclasses import dataclass, field
 
 
+MAIN_PROCESS = "MainProcess"
+
+
 @dataclass
 class Context:
-    name: str = "MainProcess"
+    name: str = MAIN_PROCESS
     poll_interval: float = 1e-3
     poll_timeout: float = 1e-3
     shared_values: dict = field(default_factory=dict)

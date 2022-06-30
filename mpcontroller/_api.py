@@ -7,6 +7,7 @@ from . import ipc
 from . import util
 from . import worker
 
+from .config import MAIN_PROCESS
 from .exceptions import PicklableException as Exception
 from .exceptions import UnknownMessageError
 from .exceptions import WorkerRuntimeError
@@ -23,6 +24,7 @@ __all__ = (
     "Event",
     "Exception",
     "IDLE",
+    "MAIN_PROCESS",
     "Signal",
     "Task",
     "UnknownMessageError",
